@@ -1,0 +1,23 @@
+[
+  {
+    "stop": "안산대학교 정류장",
+    "lat": 37.309431,
+    "lng": 126.873646,
+    "buses": [
+      { "name": "1호차", "lat": null, "lng": null },
+      { "name": "2호차", "lat": null, "lng": null },
+      { "name": "8호차", "lat": null, "lng": null }
+    ]
+  },
+  {
+    "stop": "상록수역 정류장",
+    "lat": 37.302324,
+    "lng": 126.866984,
+    "buses": [
+      { "name": "1호차", "lat": null, "lng": null },
+      { "name": "2호차", "lat": null, "lng": null },
+    
+      { "name": "8호차", "lat": null, "lng": null }
+    ]
+  }
+]
