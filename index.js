@@ -1,18 +1,17 @@
-const express = require('express');
-const cors = require('cors');
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import './index.css';
+import App from './App';
+import reportWebVitals from './reportWebVitals';
 
-const app = express();
-app.use(cors());
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
 
-const port = process.env.PORT || 5000;  // ✅ 이게 핵심!!
-
-app.get('/bus-info', (req, res) => {
-  res.json([
-    { name: "상록수역", lat: 37.3025, lng: 126.8667 },
-    { name: "안산대학교", lat: 37.3100, lng: 126.8235 }
-  ]);
-});
-
-app.listen(port, () => {
-  console.log(`✅ 서버 실행 중: http://localhost:${port}`);
-});
+// If you want to start measuring performance in your app, pass a function
+// to log results (for example: reportWebVitals(console.log))
+// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
+reportWebVitals();
