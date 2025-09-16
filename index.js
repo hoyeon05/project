@@ -2,9 +2,10 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());  // ✅ 프론트에서 fetch 요청 허용
+app.use(cors({
+  origin: ["http://localhost:3000", "http://localhost:5000", "https://everybus3.onrender.com"]
+}));
 
-// ✅ 반드시 이 포트로 받아야 Render에서 작동함
 const port = process.env.PORT || 5000;
 
 app.get('/bus-info', (req, res) => {
