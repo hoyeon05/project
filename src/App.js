@@ -27,9 +27,7 @@ const KAKAO_APP_KEY = (
   "YOUR_KAKAO_APP_KEY"
 );
 
-app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:5000", "https://everybus3.onrender.com"]
-}));
+
 const PROD_SERVER_URL = "https://project-1-ek9j.onrender.com"; // 필요 시 교체
 const getServerURL = () => (window.location.hostname.includes("localhost") ? "http://localhost:5000" : PROD_SERVER_URL);
 
