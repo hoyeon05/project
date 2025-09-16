@@ -1,20 +1,30 @@
-const express = require('express');
-const cors = require('cors');
-
+const express = require("express");
+const cors = require("cors");
 const app = express();
-app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:5000", "https://everybus3.onrender.com"]
-}));
 
-const port = process.env.PORT || 5000;
+app.use(express.json());
 
-app.get('/bus-info', (req, res) => {
+// 프리플라이트(OPTIONS) 포함해서 모두 허용
+// 기존
+app.get("/bus-info", (req, res) => {
   res.json([
-    { name: "상록수역", lat: 37.303611793223766, lng: 126.86688233780662 },
-    { name: "안산대학교", "lat": 37.30953435504419, "lng": 126.87350757149399, }
+    { name: "상록수역",  lat: 37.303611793223766, lng: 126.8668823 },
+    { name: "안산대학교", lat: 37.309534355054419, lng: 126.873 }
   ]);
 });
 
-app.listen(port, () => {
-  console.log(`✅ 서버 실행 중: http://localhost:${port}`);
+// 호환용 /stops (id, name, lat, lng로 맞춰줌)
+app.get("/stops", (req, res) => {
+  const busInfo = [
+    { name: "상록수역",  lat: 37.303611793223766, lng: 126.8668823 },
+    { name: "안산대학교", lat: 37.309534355054419, lng: 126.873 }
+  ];
+  const stops = busInfo.map((b, i) => ({
+    id: String(i + 1),
+    name: b.name,
+    lat: b.lat,
+    lng: b.lng,
+    nextArrivals: []  // 필요하면 ETA 넣기
+  }));
+  res.json(stops);
 });
