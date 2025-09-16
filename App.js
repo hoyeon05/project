@@ -28,7 +28,7 @@ const KAKAO_APP_KEY = (
 );
 
 
-const PROD_SERVER_URL = "https://project-1-ek9j.onrender.com"; // 필요 시 교체
+const PROD_SERVER_URL = "https://project-2-ek9j.onrender.com"; // 필요 시 교체
 const getServerURL = () => (window.location.hostname.includes("localhost") ? "http://localhost:5000" : PROD_SERVER_URL);
 
 
@@ -470,3 +470,5 @@ const NotFound = () => (
     </div>
   </div>
 );
+
+
