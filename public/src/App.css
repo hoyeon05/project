@@ -1,0 +1,73 @@
+.App {
+  font-family: Arial, sans-serif;
+  text-align: center;
+}
+
+.title-bar-container {
+  background-color: #1ea0ff;
+  color: white;
+  padding: 20px 0;
+}
+
+.search-container {
+  margin: 20px auto;
+  background: #e6f2fc;
+  padding: 10px 20px;
+  border-radius: 12px;
+  display: inline-block;
+}
+
+.map {
+  width: 90%;
+  height: 400px;
+  margin: 20px auto;
+  border-radius: 10px;
+  border: 2px solid #ccc;
+}
+
+.section-title {
+  font-weight: bold;
+  margin-top: 30px;
+}
+
+.bus-list {
+  margin-top: 10px;
+}
+
+.bus-item {
+  margin: 5px 0;
+  font-weight: bold;
+}
+
+.footer-buttons {
+  display: flex;
+  justify-content: center;
+  margin-top: 30px;
+  gap: 20px;
+}
+
+.icon-btn img {
+  width: 36px;
+  height: 36px;
+}
+
+/* 사용자 위치 마커 스타일 */
+.custom-my-location {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  background: rgba(0, 123, 255, 0.5);
+  border: 2px solid #007bff;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(0, 123, 255, 0.8);
+}
+
+.custom-my-location-inner {
+  width: 10px;
+  height: 10px;
+  background: #007bff;
+  border-radius: 50%;
+  position: absolute;
+  top: 4px;
+  left: 4px;
+}
