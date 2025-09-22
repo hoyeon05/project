@@ -2,25 +2,17 @@ import React, { useEffect, useMemo, useRef, useState, createContext, useContext 
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from "react-router-dom";
 
 /**
- * EveryBus React UI (연결 버전) — 전체 수정본
- * - 스플래시 → 메인(지도+목록) → 정류장 상세, 즐겨찾기, 알림 설정
- * - 하단 탭바
- * - Tailwind 기반
- *
- * ✅ 실연동
- *  1) 백엔드: /stops(권장) 또는 /bus-info(호환) 자동 매핑
- *  2) Kakao 지도: SDK 자동 로딩 + 마커 + 클릭 시 상세 이동
- *
- * ⛳ 바꿀 것 2개
- *  - KAKAO_APP_KEY: 카카오 앱 키 (env 권장)
- *  - PROD_SERVER_URL: 배포 서버 주소 (env 권장)
+ * EveryBus React UI — 차량 항상 표시 버전
+ * - 정류장: /stops 또는 /bus-info (자동 매핑)
+ * - 차량위치: /vehicles → /bus-positions → /busLocations → /realtime (자동 폴백)
+ * - Kakao 지도 + 정류장 마커 + 버스 오버레이(항상 표시)
  */
 
 /********************** 환경값 **********************/
 const KAKAO_APP_KEY =
   (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_KAKAO_APP_KEY) ||
   (typeof process !== "undefined" && process.env && process.env.REACT_APP_KAKAO_APP_KEY) ||
-  "YOUR_KAKAO_APP_KEY";
+  "1befb49da92b720b377651fbf18cd76a";
 
 const PROD_SERVER_URL =
   (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_SERVER_URL) ||
@@ -30,36 +22,31 @@ const PROD_SERVER_URL =
 const getServerURL = () =>
   window.location.hostname.includes("localhost") ? "http://localhost:5000" : PROD_SERVER_URL;
 
-/********************** 공용 컨텍스트 **********************/
+// 지도 컨테이너 강제 높이(px)
+const MAP_HEIGHT = 360;
+const VEHICLE_POLL_MS = 5000;
+
+/********************** 컨텍스트 **********************/
 const AppContext = createContext(null);
 const useApp = () => useContext(AppContext);
 
 /********************** Kakao SDK 로더 **********************/
 async function loadKakaoMaps(appKey) {
-  // 이미 로드됨
   if (window.kakao?.maps) return true;
-
-  // 기존 스크립트가 있으면 로드 완료까지 폴링
-  const existing = document.getElementById("kakao-sdk");
-  if (existing) {
+  if (document.getElementById("kakao-sdk")) {
     await new Promise((res) => {
       const check = () => (window.kakao?.maps ? res(true) : setTimeout(check, 50));
       check();
     });
     return true;
   }
-
-  // 신규 로드
   await new Promise((resolve, reject) => {
     const s = document.createElement("script");
     s.id = "kakao-sdk";
-    s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=1befb49da92b720b377651fbf18cd76a&autoload&autoload=false&libraries=services`;
+    s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_APP_KEY}&autoload=false&libraries=services`;
     s.onload = () => {
       if (!window.kakao?.maps) return reject(new Error("Kakao global missing"));
-      window.kakao.maps.load(() => {
-        if (window.kakao?.maps) resolve(true);
-        else reject(new Error("Kakao maps failed to load"));
-      });
+      window.kakao.maps.load(() => (window.kakao?.maps ? resolve(true) : reject(new Error("Kakao maps failed to load"))));
     };
     s.onerror = reject;
     document.head.appendChild(s);
@@ -69,24 +56,19 @@ async function loadKakaoMaps(appKey) {
 
 /********************** 스키마 어댑터 **********************/
 function mapToStops(raw) {
-  // 케이스 1: 이미 정류장 배열
   if (Array.isArray(raw) && raw[0]?.id && raw[0]?.lat != null && raw[0]?.lng != null) {
     return raw
       .map((s) => ({
         id: String(s.id),
         name: s.name || s.stopName || "이름없는 정류장",
-        lat: Number(s.lat),
-        lng: Number(s.lng),
+        lat: Number(s.lat), lng: Number(s.lng),
         nextArrivals: s.nextArrivals || s.arrivals || [],
         favorite: !!s.favorite,
       }))
       .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lng));
   }
-
-  // 케이스 2: {stops:[...]}
   if (raw?.stops && Array.isArray(raw.stops)) return mapToStops(raw.stops);
 
-  // 케이스 3: /bus-info 형식 → 정류장 기준 묶기
   if (Array.isArray(raw) && raw.length && (raw[0].stopId || raw[0].stop)) {
     const byStop = new Map();
     raw.forEach((item) => {
@@ -97,92 +79,88 @@ function mapToStops(raw) {
       const eta = item.eta ?? item.arrival ?? item.nextArrival ?? null;
 
       if (!byStop.has(stopId)) {
-        byStop.set(stopId, {
-          id: stopId,
-          name: stopName,
-          lat: Number(lat),
-          lng: Number(lng),
-          nextArrivals: [],
-          favorite: false,
-        });
+        byStop.set(stopId, { id: stopId, name: stopName, lat: Number(lat), lng: Number(lng), nextArrivals: [], favorite: false });
       }
       if (eta != null) byStop.get(stopId).nextArrivals.push(String(eta));
     });
-
     return [...byStop.values()]
       .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lng))
       .map((s) => ({ ...s, nextArrivals: s.nextArrivals.slice(0, 3) }));
   }
+  return [];
+}
 
-  // 알 수 없는 형식
+function mapToVehicles(raw) {
+  if (Array.isArray(raw) && raw[0]?.lat != null && raw[0]?.lng != null) {
+    return raw
+      .map((v, idx) => ({
+        id: String(v.id ?? v.busId ?? idx),
+        lat: Number(v.lat ?? v.latitude ?? v.position?.lat ?? v.position?.latitude),
+        lng: Number(v.lng ?? v.longitude ?? v.position?.lng ?? v.position?.longitude),
+        heading: v.heading ?? v.bearing ?? v.direction ?? null,
+        route: v.route ?? v.routeName ?? v.line ?? v.busNo ?? null,
+        updatedAt: v.updatedAt ?? v.timestamp ?? null,
+      }))
+      .filter((v) => Number.isFinite(v.lat) && Number.isFinite(v.lng));
+  }
+  if (raw?.vehicles && Array.isArray(raw.vehicles)) return mapToVehicles(raw.vehicles);
   return [];
 }
 
 /********************** API **********************/
 async function fetchStopsOnce() {
   const base = getServerURL();
-
-  // 1순위: /stops
   try {
     const r = await fetch(`${base}/stops`, { headers: { Accept: "application/json" } });
     if (r.ok) {
-      const data = await r.json();
-      const mapped = mapToStops(data);
+      const mapped = mapToStops(await r.json());
       if (mapped.length) return mapped;
-    } else {
-      console.error("/stops response not ok:", r.status, r.statusText);
-    }
-  } catch (e) {
-    console.error("/stops fetch error:", e);
-  }
+    } else { console.error("/stops response not ok:", r.status, r.statusText); }
+  } catch (e) { console.error("/stops fetch error:", e); }
 
-  // 2순위: /bus-info
   try {
     const r2 = await fetch(`${base}/bus-info`, { headers: { Accept: "application/json" } });
     if (r2.ok) {
-      const data2 = await r2.json();
-      const mapped2 = mapToStops(data2);
+      const mapped2 = mapToStops(await r2.json());
       if (mapped2.length) return mapped2;
-    } else {
-      console.error("/bus-info response not ok:", r2.status, r2.statusText);
-    }
-  } catch (e) {
-    console.error("/bus-info fetch error:", e);
-  }
+    } else { console.error("/bus-info response not ok:", r2.status, r2.statusText); }
+  } catch (e) { console.error("/bus-info fetch error:", e); }
 
   return [];
 }
 
-/********************** 즐겨찾기 저장 유틸 (localStorage) **********************/
-const FAV_KEY = "everybus:favorites";
-
-function loadFavIds() {
-  try {
-    const raw = localStorage.getItem(FAV_KEY);
-    if (!raw) return new Set();
-    const arr = JSON.parse(raw);
-    return new Set(arr);
-  } catch {
-    return new Set();
+async function fetchVehiclesOnce() {
+  const base = getServerURL();
+  const tryFetch = async (path) => {
+    try {
+      const r = await fetch(`${base}${path}`, { headers: { Accept: "application/json" } });
+      if (!r.ok) return [];
+      return mapToVehicles(await r.json());
+    } catch (e) { console.error(`${path} fetch error:`, e); return []; }
+  };
+  for (const path of ["/vehicles", "/bus-positions", "/busLocations", "/realtime"]) {
+    const v = await tryFetch(path);
+    if (v.length) return v;
   }
+  return [];
 }
 
-function saveFavIds(set) {
-  try {
-    localStorage.setItem(FAV_KEY, JSON.stringify([...set]));
-  } catch {}
-}
+/********************** 즐겨찾기 저장 **********************/
+const FAV_KEY = "everybus:favorites";
+const loadFavIds = () => {
+  try { const raw = localStorage.getItem(FAV_KEY); return raw ? new Set(JSON.parse(raw)) : new Set(); }
+  catch { return new Set(); }
+};
+const saveFavIds = (set) => { try { localStorage.setItem(FAV_KEY, JSON.stringify([...set])); } catch {} };
 
-/********************** 유틸 컴포넌트 **********************/
+/********************** 공통 UI **********************/
 const Page = ({ title, right, children }) => {
   const nav = useNavigate();
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <div className="sticky top-0 z-10 bg-white border-b">
         <div className="max-w-screen-sm mx-auto flex items-center justify-between px-4 h-14">
-          <button onClick={() => nav(-1)} className="px-2 py-1 text-sm rounded hover:bg-gray-100" aria-label="뒤로가기">
-            〈
-          </button>
+          <button onClick={() => nav(-1)} className="px-2 py-1 text-sm rounded hover:bg-gray-100" aria-label="뒤로가기">〈</button>
           <h1 className="font-semibold text-lg">{title}</h1>
           <div className="min-w-[2rem] text-right">{right}</div>
         </div>
@@ -194,24 +172,14 @@ const Page = ({ title, right, children }) => {
 };
 
 const Tabbar = () => {
-  const location = useLocation();
-  const current = location.pathname;
-  const isActive = (to) => current === to || (to === "/" && current.startsWith("/stop/"));
-
+  const { pathname } = useLocation();
+  const isActive = (to) => pathname === to || (to === "/" && pathname.startsWith("/stop/"));
   const Item = ({ to, label, icon }) => (
-    <Link
-      to={to}
-      className={`flex flex-col items-center gap-1 px-3 py-2 rounded ${
-        isActive(to) ? "bg-gray-200" : "hover:bg-gray-100"
-      }`}
-    >
-      <span aria-hidden className="text-xl">
-        {icon}
-      </span>
+    <Link to={to} className={`flex flex-col items-center gap-1 px-3 py-2 rounded ${isActive(to) ? "bg-gray-200" : "hover:bg-gray-100"}`}>
+      <span aria-hidden className="text-xl">{icon}</span>
       <span className="text-xs">{label}</span>
     </Link>
   );
-
   return (
     <div className="sticky bottom-0 z-10 bg-white border-t">
       <div className="max-w-screen-sm mx-auto grid grid-cols-3 gap-2 p-2 text-gray-700">
@@ -226,65 +194,44 @@ const Tabbar = () => {
 /********************** 스플래시 **********************/
 const SplashScreen = () => {
   const nav = useNavigate();
-  useEffect(() => {
-    // 권한/초기 체크 후 홈 이동 등 필요 시 작성
-  }, []);
+  useEffect(() => {}, []);
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-blue-50 to-white p-8">
       <div className="text-4xl font-extrabold tracking-wide mb-2">EVERYBUS</div>
       <p className="text-gray-600 mb-8">실시간 캠퍼스 버스 도착 알림</p>
-      <button
-        onClick={() => nav("/")}
-        className="px-6 py-3 rounded-2xl shadow bg-blue-600 text-white hover:bg-blue-700 active:scale-[.99]"
-      >
+      <button onClick={() => nav("/")} className="px-6 py-3 rounded-2xl shadow bg-blue-600 text-white hover:bg-blue-700 active:scale-[.99]">
         시작하기
       </button>
     </div>
   );
 };
 
-/********************** 홈 (지도 + 목록) **********************/
+/********************** 홈 (지도 + 목록 + 차량 오버레이 항상 ON) **********************/
 const HomeScreen = () => {
-  const { stops, setStops, toggleFavorite, search, setSearch, favIds, setFavIds } = useApp();
+  const { stops, setStops, search, setSearch, favIds, setFavIds, vehicles, setVehicles } = useApp();
   const nav = useNavigate();
   const mapEl = useRef(null);
   const mapRef = useRef(null);
-  const markersRef = useRef([]);
+  const stopMarkersRef = useRef([]);
+  const busOverlaysRef = useRef([]);
   const [loadError, setLoadError] = useState("");
+  const [lastBusUpdate, setLastBusUpdate] = useState(0);
 
-  // 초기 데이터 + 30초마다 갱신 (전체 동기화 + 즐겨찾기 유지)
+  // 정류장: 초기 로드 + 30초 갱신
   useEffect(() => {
     let alive = true;
-
     const applyData = (data) => {
       if (!alive) return;
-      if (data.length === 0) {
-        setLoadError("서버에서 정류장 정보를 불러오지 못했습니다.");
-        return;
-      }
+      if (!data.length) { setLoadError("서버에서 정류장 정보를 불러오지 못했습니다."); return; }
       setLoadError("");
-      setStops(
-        data.map((s) => ({
-          ...s,
-          favorite: favIds.has(String(s.id)),
-        }))
-      );
+      setStops(data.map((s) => ({ ...s, favorite: favIds.has(String(s.id)) })));
     };
-
-    (async () => {
-      const data = await fetchStopsOnce();
-      applyData(data);
-    })();
-
+    (async () => applyData(await fetchStopsOnce()))();
     const iv = setInterval(async () => {
       const data = await fetchStopsOnce();
       if (data.length) applyData(data);
     }, 30000);
-
-    return () => {
-      alive = false;
-      clearInterval(iv);
-    };
+    return () => { alive = false; clearInterval(iv); };
   }, [setStops, favIds]);
 
   // Kakao 지도 초기화
@@ -299,11 +246,17 @@ const HomeScreen = () => {
           center: new kakao.maps.LatLng(37.2999, 126.8399),
           level: 5,
         });
+        setTimeout(() => mapRef.current && mapRef.current.relayout(), 0);
       }
     })();
-    return () => {
-      canceled = true;
-    };
+    return () => { canceled = true; };
+  }, []);
+
+  // 창 크기 변경 시 relayout
+  useEffect(() => {
+    const onResize = () => mapRef.current && mapRef.current.relayout();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   // 검색 필터
@@ -313,23 +266,23 @@ const HomeScreen = () => {
     return stops.filter((s) => (s.name || "").toLowerCase().includes(q));
   }, [stops, search]);
 
-  // 마커 렌더링 & 정리
+  // 정류장 마커 렌더링
   useEffect(() => {
     const kakao = window.kakao;
     if (!kakao?.maps || !mapRef.current) return;
 
-    // 기존 마커 제거
-    markersRef.current.forEach((m) => m.setMap(null));
-    markersRef.current = [];
-
+    stopMarkersRef.current.forEach((m) => m.setMap(null));
+    stopMarkersRef.current = [];
     if (!filtered.length) return;
 
+    mapRef.current.relayout();
     const bounds = new kakao.maps.LatLngBounds();
+
     filtered.forEach((s) => {
       const pos = new kakao.maps.LatLng(s.lat, s.lng);
       const marker = new kakao.maps.Marker({ position: pos, map: mapRef.current });
       kakao.maps.event.addListener(marker, "click", () => nav(`/stop/${s.id}`));
-      markersRef.current.push(marker);
+      stopMarkersRef.current.push(marker);
       bounds.extend(pos);
     });
 
@@ -337,24 +290,68 @@ const HomeScreen = () => {
     else mapRef.current.setCenter(new kakao.maps.LatLng(filtered[0].lat, filtered[0].lng));
 
     return () => {
-      markersRef.current.forEach((m) => m.setMap(null));
-      markersRef.current = [];
+      stopMarkersRef.current.forEach((m) => m.setMap(null));
+      stopMarkersRef.current = [];
     };
   }, [filtered, nav]);
 
+  // 차량 폴링 (항상 ON)
+  useEffect(() => {
+    let alive = true;
+    const run = async () => {
+      const v = await fetchVehiclesOnce();
+      if (!alive) return;
+      setVehicles(v);
+      setLastBusUpdate(Date.now());
+    };
+    run();
+    const iv = setInterval(run, VEHICLE_POLL_MS);
+    return () => { alive = false; clearInterval(iv); };
+  }, [setVehicles]);
+
+  // 차량 오버레이 렌더링
+  useEffect(() => {
+    const kakao = window.kakao;
+    if (!kakao?.maps || !mapRef.current) return;
+
+    busOverlaysRef.current.forEach((o) => o.setMap(null));
+    busOverlaysRef.current = [];
+    if (!vehicles.length) return;
+
+    vehicles.forEach((v) => {
+      const pos = new kakao.maps.LatLng(v.lat, v.lng);
+      const rotate = typeof v.heading === "number" ? `transform: rotate(${Math.round(v.heading)}deg);` : "";
+      const label = v.route ? `<div style="font-size:10px;line-height:1;margin-top:2px;text-align:center">${String(v.route)}</div>` : "";
+      const content =
+        `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:auto">
+           <div style="font-size:20px;filter: drop-shadow(0 0 2px rgba(0,0,0,.2)); ${rotate}">🚌</div>
+           ${label}
+         </div>`;
+      const overlay = new kakao.maps.CustomOverlay({ position: pos, content, yAnchor: 0.5, xAnchor: 0.5 });
+      overlay.setMap(mapRef.current);
+      busOverlaysRef.current.push(overlay);
+    });
+
+    return () => {
+      busOverlaysRef.current.forEach((o) => o.setMap(null));
+      busOverlaysRef.current = [];
+    };
+  }, [vehicles]);
+
   const onToggleFavorite = (id) => {
     const sid = String(id);
-    setStops((prev) =>
-      prev.map((s) => (String(s.id) === sid ? { ...s, favorite: !s.favorite } : s))
-    );
+    setStops((prev) => prev.map((s) => (String(s.id) === sid ? { ...s, favorite: !s.favorite } : s)));
     setFavIds((prev) => {
       const next = new Set(prev);
-      if (next.has(sid)) next.delete(sid);
-      else next.add(sid);
+      next.has(sid) ? next.delete(sid) : next.add(sid);
       saveFavIds(next);
       return next;
     });
   };
+
+  const lastBusText = lastBusUpdate
+    ? `버스 위치 갱신: ${Math.max(0, Math.round((Date.now() - lastBusUpdate) / 1000))}초 전`
+    : "버스 위치 준비 중…";
 
   return (
     <Page title="EVERYBUS">
@@ -368,11 +365,7 @@ const HomeScreen = () => {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="정류장 검색 (예: 안산대학교)"
           />
-          {search && (
-            <button className="text-sm text-gray-500" onClick={() => setSearch("")}>
-              지우기
-            </button>
-          )}
+          {search && <button className="text-sm text-gray-500" onClick={() => setSearch("")}>지우기</button>}
         </div>
       </div>
 
@@ -380,15 +373,17 @@ const HomeScreen = () => {
       <div
         ref={mapEl}
         id="map"
-        className="w-full h-56 bg-gray-200 rounded-2xl mb-4 flex items-center justify-center"
+        style={{ width: "100%", height: MAP_HEIGHT }}
+        className="bg-gray-200 rounded-2xl mb-1 flex items-center justify-center"
       >
         <span className="text-gray-600">지도 로딩 중…</span>
       </div>
 
-      {/* 서버 에러 안내 */}
-      {loadError && (
-        <div className="mb-3 text-center text-sm text-red-600">{loadError}</div>
-      )}
+      {/* 보조 정보 */}
+      <div className="flex items-center justify-between mb-3 text-xs text-gray-500">
+        <div>{lastBusText}</div>
+        {loadError && <div className="text-red-600">{loadError}</div>}
+      </div>
 
       {/* 정류장 리스트 */}
       <div className="space-y-2">
@@ -399,16 +394,13 @@ const HomeScreen = () => {
             tabIndex={0}
             className="w-full bg-white border rounded-2xl px-4 py-3 text-left hover:bg-gray-50 active:scale-[.999] focus:outline-none"
             onClick={() => nav(`/stop/${stop.id}`)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") nav(`/stop/${stop.id}`);
-            }}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") nav(`/stop/${stop.id}`); }}
           >
             <div className="flex items-center justify-between">
               <div>
                 <div className="font-semibold">{stop.name}</div>
                 <div className="text-xs text-gray-500">
-                  다음 도착:{" "}
-                  {stop.nextArrivals?.length ? stop.nextArrivals.join(", ") : "정보 수집 중"}
+                  다음 도착: {stop.nextArrivals?.length ? stop.nextArrivals.join(", ") : "정보 수집 중"}
                 </div>
               </div>
               <span
@@ -416,16 +408,8 @@ const HomeScreen = () => {
                 aria-label="즐겨찾기 토글"
                 title="즐겨찾기"
                 className="text-xl select-none"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFavorite(stop.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.stopPropagation();
-                    onToggleFavorite(stop.id);
-                  }
-                }}
+                onClick={(e) => { e.stopPropagation(); onToggleFavorite(stop.id); }}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onToggleFavorite(stop.id); } }}
                 tabIndex={0}
               >
                 {stop.favorite ? "⭐" : "☆"}
@@ -433,9 +417,7 @@ const HomeScreen = () => {
             </div>
           </div>
         ))}
-        {filtered.length === 0 && (
-          <div className="text-center text-gray-500 py-10">검색 결과가 없습니다.</div>
-        )}
+        {filtered.length === 0 && <div className="text-center text-gray-500 py-10">검색 결과가 없습니다.</div>}
       </div>
     </Page>
   );
@@ -458,11 +440,8 @@ const StopDetail = () => {
       const center = new kakao.maps.LatLng(stop.lat, stop.lng);
       mapRef.current = new kakao.maps.Map(mapEl.current, { center, level: 4 });
       new kakao.maps.Marker({ position: center, map: mapRef.current });
+      setTimeout(() => mapRef.current && mapRef.current.relayout(), 0);
     })();
-
-    return () => {
-      // 단일 마커/맵은 GC에 맡겨도 되지만, 필요 시 추가 정리 가능
-    };
   }, [stop]);
 
   if (!stop) {
@@ -476,19 +455,13 @@ const StopDetail = () => {
   return (
     <Page
       title={stop.name}
-      right={
-        <button onClick={() => nav("/alerts")} className="text-sm text-blue-600">
-          알림설정
-        </button>
-      }
+      right={<button onClick={() => nav("/alerts")} className="text-sm text-blue-600">알림설정</button>}
     >
       <div className="bg-white border rounded-2xl p-4 mb-3">
         <div className="text-sm text-gray-500 mb-2">다음 도착 예정</div>
         <div className="flex gap-2 flex-wrap">
           {(stop.nextArrivals?.length ? stop.nextArrivals : ["정보 수집 중"]).map((t, idx) => (
-            <div key={idx} className="px-3 py-2 rounded-xl bg-gray-100 text-sm">
-              {t}
-            </div>
+            <div key={idx} className="px-3 py-2 rounded-xl bg-gray-100 text-sm">{t}</div>
           ))}
         </div>
       </div>
@@ -497,7 +470,8 @@ const StopDetail = () => {
         <div className="text-sm text-gray-500 mb-2">정류장 위치</div>
         <div
           ref={mapEl}
-          className="w-full h-52 bg-gray-200 rounded-xl flex items-center justify-center"
+          style={{ width: "100%", height: MAP_HEIGHT }}
+          className="bg-gray-200 rounded-xl flex items-center justify-center"
         >
           지도(단일 마커)
         </div>
@@ -529,25 +503,20 @@ const FavoritesScreen = () => {
             tabIndex={0}
             className="w-full bg-white border rounded-2xl px-4 py-3 text-left hover:bg-gray-50 focus:outline-none"
             onClick={() => nav(`/stop/${stop.id}`)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") nav(`/stop/${stop.id}`);
-            }}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") nav(`/stop/${stop.id}`); }}
           >
             <div className="flex items-center justify-between">
               <div>
                 <div className="font-semibold">{stop.name}</div>
                 <div className="text-xs text-gray-500">
-                  다음 도착:{" "}
-                  {stop.nextArrivals?.length ? stop.nextArrivals.join(", ") : "정보 수집 중"}
+                  다음 도착: {stop.nextArrivals?.length ? stop.nextArrivals.join(", ") : "정보 수집 중"}
                 </div>
               </div>
               <span className="text-xl">⭐</span>
             </div>
           </div>
         ))}
-        {favorites.length === 0 && (
-          <div className="text-center text-gray-500 py-10">즐겨찾기한 정류장이 없습니다.</div>
-        )}
+        {favorites.length === 0 && <div className="text-center text-gray-500 py-10">즐겨찾기한 정류장이 없습니다.</div>}
       </div>
     </Page>
   );
@@ -567,9 +536,7 @@ const AlertsScreen = () => {
           </div>
           <button
             onClick={() => setEnabled((v) => !v)}
-            className={`px-4 py-2 rounded-xl border ${
-              enabled ? "bg-blue-600 text-white border-blue-600" : "bg-white"
-            }`}
+            className={`px-4 py-2 rounded-xl border ${enabled ? "bg-blue-600 text-white border-blue-600" : "bg-white"}`}
           >
             {enabled ? "ON" : "OFF"}
           </button>
@@ -595,31 +562,23 @@ const AlertsScreen = () => {
 export default function App() {
   const [stops, setStops] = useState([]);
   const [search, setSearch] = useState("");
-
-  // 즐겨찾기 id Set (영속)
   const [favIds, setFavIds] = useState(() => loadFavIds());
+
+  // 차량 상태 (항상 표시)
+  const [vehicles, setVehicles] = useState([]);
 
   const toggleFavorite = (id) => {
     const sid = String(id);
     setStops((prev) => prev.map((s) => (String(s.id) === sid ? { ...s, favorite: !s.favorite } : s)));
     setFavIds((prev) => {
       const next = new Set(prev);
-      if (next.has(sid)) next.delete(sid);
-      else next.add(sid);
+      next.has(sid) ? next.delete(sid) : next.add(sid);
       saveFavIds(next);
       return next;
     });
   };
 
-  const ctx = {
-    stops,
-    setStops,
-    search,
-    setSearch,
-    toggleFavorite,
-    favIds,
-    setFavIds,
-  };
+  const ctx = { stops, setStops, search, setSearch, toggleFavorite, favIds, setFavIds, vehicles, setVehicles };
 
   return (
     <AppContext.Provider value={ctx}>
@@ -642,9 +601,7 @@ const NotFound = () => (
     <div className="text-center">
       <div className="text-4xl mb-2">🧭</div>
       <div className="font-semibold">페이지를 찾을 수 없습니다</div>
-      <Link className="text-blue-600" to="/">
-        홈으로
-      </Link>
+      <Link className="text-blue-600" to="/">홈으로</Link>
     </div>
   </div>
 );
