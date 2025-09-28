@@ -3,10 +3,8 @@ import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams
 
 /**
  * EveryBus React UI — 차량 항상 표시 버전
- * - 정류장: /stops 또는 /bus-info (자동 매핑)
- * - 차량위치: /vehicles → /bus-positions → /busLocations → /realtime (자동 폴백)
  * - Kakao 지도 + 정류장 마커 + 버스 오버레이(항상 표시)
- * - 사용자 위치 실시간 추적 기능 포함 ✨
+ * - 사용자 위치 실시간 추적 및 마커 유지 기능 포함 ✨
  */
 
 /********************** 환경값 **********************/
@@ -55,7 +53,7 @@ async function loadKakaoMaps(appKey) {
   return true;
 }
 
-/********************** 사용자 위치 추적 Hook ✨ **********************/
+/********************** 사용자 위치 추적 Hook **********************/
 function useUserLocation(setUserLocation) {
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -64,6 +62,7 @@ function useUserLocation(setUserLocation) {
     }
 
     const successHandler = (position) => {
+      console.log("✅ LOCATION SUCCESS:", position.coords.latitude, position.coords.longitude);
       setUserLocation({
         lat: position.coords.latitude,
         lng: position.coords.longitude,
@@ -73,10 +72,9 @@ function useUserLocation(setUserLocation) {
     };
 
     const errorHandler = (error) => {
-      console.error("Error getting user location:", error);
+      console.error("❌ LOCATION ERROR:", error.code, error.message);
     };
 
-    // watchPosition으로 실시간 추적 시작
     const watchId = navigator.geolocation.watchPosition(
       successHandler,
       errorHandler,
@@ -87,7 +85,6 @@ function useUserLocation(setUserLocation) {
       }
     );
 
-    // 컴포넌트 언마운트 시 추적 중지
     return () => navigator.geolocation.clearWatch(watchId);
   }, [setUserLocation]);
 }
@@ -246,13 +243,13 @@ const SplashScreen = () => {
 
 /********************** 홈 (지도 + 목록 + 차량 오버레이 항상 ON) **********************/
 const HomeScreen = () => {
-  const { stops, setStops, search, setSearch, favIds, setFavIds, vehicles, setVehicles, userLocation } = useApp(); // ✨ userLocation 사용
+  const { stops, setStops, search, setSearch, favIds, setFavIds, vehicles, setVehicles, userLocation } = useApp();
   const nav = useNavigate();
   const mapEl = useRef(null);
   const mapRef = useRef(null);
   const stopMarkersRef = useRef([]);
   const busOverlaysRef = useRef([]);
-  const userMarkerRef = useRef(null); // ✨ 사용자 마커 Ref 추가
+  const userMarkerRef = useRef(null);
   const [loadError, setLoadError] = useState("");
   const [lastBusUpdate, setLastBusUpdate] = useState(0);
 
@@ -325,11 +322,8 @@ const HomeScreen = () => {
       bounds.extend(pos);
     });
 
-    // 정류장 마커가 있으면, 지도 영역을 정류장 전체를 포함하도록 조정
     if (filtered.length > 1) mapRef.current.setBounds(bounds);
     else if (filtered.length === 1) mapRef.current.setCenter(new kakao.maps.LatLng(filtered[0].lat, filtered[0].lng));
-    // 사용자 위치가 로드되었으면, 지도의 중심을 사용자에 맞춤 (선택적)
-    // else if (userLocation) mapRef.current.setCenter(new kakao.maps.LatLng(userLocation.lat, userLocation.lng));
 
     return () => {
       stopMarkersRef.current.forEach((m) => m.setMap(null));
@@ -380,11 +374,11 @@ const HomeScreen = () => {
     };
   }, [vehicles]);
 
-  // ✨ 사용자 위치 마커 렌더링 및 업데이트
+  // ✨ 사용자 위치 마커 렌더링 및 업데이트 (수정된 부분)
   useEffect(() => {
     const kakao = window.kakao;
     if (!kakao?.maps || !mapRef.current || !userLocation) {
-        userMarkerRef.current?.setMap(null);
+        // userMarkerRef.current?.setMap(null); // 위치 정보가 없을 때만 제거하는 것은 비효율적일 수 있음
         userMarkerRef.current = null;
         return;
     }
@@ -392,6 +386,7 @@ const HomeScreen = () => {
     const pos = new kakao.maps.LatLng(userLocation.lat, userLocation.lng);
 
     if (!userMarkerRef.current) {
+        // 마커가 없으면 새로 생성하여 지도에 추가
         const marker = new kakao.maps.CustomOverlay({
             position: pos,
             content: '<div style="background-color:blue; width:12px; height:12px; border-radius:50%; border:2px solid white; box-shadow:0 0 5px rgba(0,0,0,0.5); z-index:100;"></div>',
@@ -401,12 +396,15 @@ const HomeScreen = () => {
         marker.setMap(mapRef.current);
         userMarkerRef.current = marker;
     } else {
+        // 마커가 있으면 위치 업데이트 및 지도에 다시 연결
+        userMarkerRef.current.setMap(mapRef.current); // 💡 핵심 수정: 홈 복귀 시 마커를 지도에 다시 표시
         userMarkerRef.current.setPosition(pos);
     }
 
     return () => {
+        // 컴포넌트가 언마운트될 때 (다른 페이지로 이동할 때) 마커를 지도에서 임시로 분리
         userMarkerRef.current?.setMap(null);
-        userMarkerRef.current = null;
+        // userMarkerRef.current = null; // 객체 자체는 유지하여 다시 돌아왔을 때 재활용
     };
   }, [userLocation]);
 
@@ -638,7 +636,7 @@ export default function App() {
   const [favIds, setFavIds] = useState(() => loadFavIds());
   const [vehicles, setVehicles] = useState([]);
 
-  // 사용자 위치 상태 및 추적 훅 실행 ✨
+  // 사용자 위치 상태 및 추적 훅 실행
   const [userLocation, setUserLocation] = useState(null);
   useUserLocation(setUserLocation); // Custom Hook 실행
 
@@ -656,7 +654,7 @@ export default function App() {
   const ctx = {
     stops, setStops, search, setSearch, toggleFavorite,
     favIds, setFavIds, vehicles, setVehicles,
-    userLocation, setUserLocation // Context에 추가
+    userLocation, setUserLocation
   };
 
   return (
