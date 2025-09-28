@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams
  * - 정류장: /stops 또는 /bus-info (자동 매핑)
  * - 차량위치: /vehicles → /bus-positions → /busLocations → /realtime (자동 폴백)
  * - Kakao 지도 + 정류장 마커 + 버스 오버레이(항상 표시)
+ * - 사용자 위치 실시간 추적 기능 포함 ✨
  */
 
 /********************** 환경값 **********************/
@@ -52,6 +53,43 @@ async function loadKakaoMaps(appKey) {
     document.head.appendChild(s);
   });
   return true;
+}
+
+/********************** 사용자 위치 추적 Hook ✨ **********************/
+function useUserLocation(setUserLocation) {
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      console.warn("Geolocation not supported by this browser.");
+      return;
+    }
+
+    const successHandler = (position) => {
+      setUserLocation({
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+        timestamp: position.timestamp,
+      });
+    };
+
+    const errorHandler = (error) => {
+      console.error("Error getting user location:", error);
+    };
+
+    // watchPosition으로 실시간 추적 시작
+    const watchId = navigator.geolocation.watchPosition(
+      successHandler,
+      errorHandler,
+      {
+        enableHighAccuracy: true,
+        timeout: 5000,
+        maximumAge: 0,
+      }
+    );
+
+    // 컴포넌트 언마운트 시 추적 중지
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [setUserLocation]);
 }
 
 /********************** 스키마 어댑터 **********************/
@@ -208,12 +246,13 @@ const SplashScreen = () => {
 
 /********************** 홈 (지도 + 목록 + 차량 오버레이 항상 ON) **********************/
 const HomeScreen = () => {
-  const { stops, setStops, search, setSearch, favIds, setFavIds, vehicles, setVehicles } = useApp();
+  const { stops, setStops, search, setSearch, favIds, setFavIds, vehicles, setVehicles, userLocation } = useApp(); // ✨ userLocation 사용
   const nav = useNavigate();
   const mapEl = useRef(null);
   const mapRef = useRef(null);
   const stopMarkersRef = useRef([]);
   const busOverlaysRef = useRef([]);
+  const userMarkerRef = useRef(null); // ✨ 사용자 마커 Ref 추가
   const [loadError, setLoadError] = useState("");
   const [lastBusUpdate, setLastBusUpdate] = useState(0);
 
@@ -286,8 +325,11 @@ const HomeScreen = () => {
       bounds.extend(pos);
     });
 
+    // 정류장 마커가 있으면, 지도 영역을 정류장 전체를 포함하도록 조정
     if (filtered.length > 1) mapRef.current.setBounds(bounds);
-    else mapRef.current.setCenter(new kakao.maps.LatLng(filtered[0].lat, filtered[0].lng));
+    else if (filtered.length === 1) mapRef.current.setCenter(new kakao.maps.LatLng(filtered[0].lat, filtered[0].lng));
+    // 사용자 위치가 로드되었으면, 지도의 중심을 사용자에 맞춤 (선택적)
+    // else if (userLocation) mapRef.current.setCenter(new kakao.maps.LatLng(userLocation.lat, userLocation.lng));
 
     return () => {
       stopMarkersRef.current.forEach((m) => m.setMap(null));
@@ -324,9 +366,9 @@ const HomeScreen = () => {
       const label = v.route ? `<div style="font-size:10px;line-height:1;margin-top:2px;text-align:center">${String(v.route)}</div>` : "";
       const content =
         `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:auto">
-           <div style="font-size:20px;filter: drop-shadow(0 0 2px rgba(0,0,0,.2)); ${rotate}">🚌</div>
-           ${label}
-         </div>`;
+          <div style="font-size:20px;filter: drop-shadow(0 0 2px rgba(0,0,0,.2)); ${rotate}">🚌</div>
+          ${label}
+        </div>`;
       const overlay = new kakao.maps.CustomOverlay({ position: pos, content, yAnchor: 0.5, xAnchor: 0.5 });
       overlay.setMap(mapRef.current);
       busOverlaysRef.current.push(overlay);
@@ -337,6 +379,37 @@ const HomeScreen = () => {
       busOverlaysRef.current = [];
     };
   }, [vehicles]);
+
+  // ✨ 사용자 위치 마커 렌더링 및 업데이트
+  useEffect(() => {
+    const kakao = window.kakao;
+    if (!kakao?.maps || !mapRef.current || !userLocation) {
+        userMarkerRef.current?.setMap(null);
+        userMarkerRef.current = null;
+        return;
+    }
+
+    const pos = new kakao.maps.LatLng(userLocation.lat, userLocation.lng);
+
+    if (!userMarkerRef.current) {
+        const marker = new kakao.maps.CustomOverlay({
+            position: pos,
+            content: '<div style="background-color:blue; width:12px; height:12px; border-radius:50%; border:2px solid white; box-shadow:0 0 5px rgba(0,0,0,0.5); z-index:100;"></div>',
+            yAnchor: 0.5,
+            xAnchor: 0.5
+        });
+        marker.setMap(mapRef.current);
+        userMarkerRef.current = marker;
+    } else {
+        userMarkerRef.current.setPosition(pos);
+    }
+
+    return () => {
+        userMarkerRef.current?.setMap(null);
+        userMarkerRef.current = null;
+    };
+  }, [userLocation]);
+
 
   const onToggleFavorite = (id) => {
     const sid = String(id);
@@ -563,9 +636,11 @@ export default function App() {
   const [stops, setStops] = useState([]);
   const [search, setSearch] = useState("");
   const [favIds, setFavIds] = useState(() => loadFavIds());
-
-  // 차량 상태 (항상 표시)
   const [vehicles, setVehicles] = useState([]);
+
+  // 사용자 위치 상태 및 추적 훅 실행 ✨
+  const [userLocation, setUserLocation] = useState(null);
+  useUserLocation(setUserLocation); // Custom Hook 실행
 
   const toggleFavorite = (id) => {
     const sid = String(id);
@@ -578,7 +653,11 @@ export default function App() {
     });
   };
 
-  const ctx = { stops, setStops, search, setSearch, toggleFavorite, favIds, setFavIds, vehicles, setVehicles };
+  const ctx = {
+    stops, setStops, search, setSearch, toggleFavorite,
+    favIds, setFavIds, vehicles, setVehicles,
+    userLocation, setUserLocation // Context에 추가
+  };
 
   return (
     <AppContext.Provider value={ctx}>
