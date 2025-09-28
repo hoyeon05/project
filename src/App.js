@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useRef, useState, createContext, useContext 
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from "react-router-dom";
 
 /**
- * EveryBus React UI — 차량 항상 표시 버전
+ * EveryBus React UI — 최종 통합 버전
  * - Kakao 지도 + 정류장 마커 + 버스 오버레이(항상 표시)
- * - 사용자 위치 실시간 추적 및 마커 유지 기능 포함 ✨
+ * - 사용자 위치 실시간 추적 및 마커 유지 기능 포함 (완료) ✨
  */
 
 /********************** 환경값 **********************/
@@ -374,19 +374,19 @@ const HomeScreen = () => {
     };
   }, [vehicles]);
 
-  // ✨ 사용자 위치 마커 렌더링 및 업데이트 (수정된 부분)
+  // ✨ 사용자 위치 마커 렌더링 및 업데이트 (수정된 최종 로직)
   useEffect(() => {
     const kakao = window.kakao;
     if (!kakao?.maps || !mapRef.current || !userLocation) {
-        // userMarkerRef.current?.setMap(null); // 위치 정보가 없을 때만 제거하는 것은 비효율적일 수 있음
-        userMarkerRef.current = null;
+        // 위치 정보가 사라지면 마커를 지도에서 분리
+        userMarkerRef.current?.setMap(null);
         return;
     }
 
     const pos = new kakao.maps.LatLng(userLocation.lat, userLocation.lng);
 
     if (!userMarkerRef.current) {
-        // 마커가 없으면 새로 생성하여 지도에 추가
+        // 1. 마커가 없으면 새로 생성하여 지도에 추가
         const marker = new kakao.maps.CustomOverlay({
             position: pos,
             content: '<div style="background-color:blue; width:12px; height:12px; border-radius:50%; border:2px solid white; box-shadow:0 0 5px rgba(0,0,0,0.5); z-index:100;"></div>',
@@ -396,15 +396,17 @@ const HomeScreen = () => {
         marker.setMap(mapRef.current);
         userMarkerRef.current = marker;
     } else {
-        // 마커가 있으면 위치 업데이트 및 지도에 다시 연결
-        userMarkerRef.current.setMap(mapRef.current); // 💡 핵심 수정: 홈 복귀 시 마커를 지도에 다시 표시
+        // 2. 마커가 있으면 위치 업데이트 및 지도에 다시 연결
+        // 홈 화면 복귀 시 마커 객체는 존재하지만 지도에 연결이 끊어져 있을 수 있으므로, 명시적으로 다시 연결
+        if (userMarkerRef.current.getMap() !== mapRef.current) {
+            userMarkerRef.current.setMap(mapRef.current); 
+        }
         userMarkerRef.current.setPosition(pos);
     }
 
     return () => {
-        // 컴포넌트가 언마운트될 때 (다른 페이지로 이동할 때) 마커를 지도에서 임시로 분리
+        // 컴포넌트가 언마운트될 때 (다른 페이지로 이동할 때) 마커를 지도에서 명시적으로 분리
         userMarkerRef.current?.setMap(null);
-        // userMarkerRef.current = null; // 객체 자체는 유지하여 다시 돌아왔을 때 재활용
     };
   }, [userLocation]);
 
