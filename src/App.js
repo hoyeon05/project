@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useRef, useState, createContext, useContext 
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from "react-router-dom";
 
 /**
- * EveryBus React UI — 최종 통합 버전
+ * EveryBus React UI — 최종 통합 및 수정 버전
  * - Kakao 지도 + 정류장 마커 + 버스 오버레이(항상 표시)
- * - 사용자 위치 실시간 추적 및 마커 유지 기능 포함 (완료) ✨
+ * - 사용자 위치 실시간 추적 및 마커 유지 기능 (오류 수정 완료) ✨
+ * - IMEI 기반 서버 통신 (fetchVehiclesOnce 수정) 🔑
  */
 
 /********************** 환경값 **********************/
@@ -164,20 +165,38 @@ async function fetchStopsOnce() {
   return [];
 }
 
+// 🔑 [수정됨] IMEI 기반으로 통합 데이터를 요청하는 함수
 async function fetchVehiclesOnce() {
   const base = getServerURL();
-  const tryFetch = async (path) => {
-    try {
-      const r = await fetch(`${base}${path}`, { headers: { Accept: "application/json" } });
-      if (!r.ok) return [];
-      return mapToVehicles(await r.json());
-    } catch (e) { console.error(`${path} fetch error:`, e); return []; }
-  };
-  for (const path of ["/vehicles", "/bus-positions", "/busLocations", "/realtime"]) {
-    const v = await tryFetch(path);
-    if (v.length) return v;
+  
+  // 💡 DB에 삽입한 사용자님의 IMEI (Galaxy S25)를 임시로 사용합니다.
+  // 실제 앱에서는 네이티브 코드에서 IMEI를 가져와 이 변수에 할당해야 합니다.
+  const TEMP_IMEI = '350599638756152'; 
+  
+  // 변경된 통합 엔드포인트 사용
+  const path = `/user/data/${TEMP_IMEI}`;
+
+  try {
+    const r = await fetch(`${base}${path}`, { headers: { Accept: "application/json" } });
+    if (!r.ok) return [];
+    
+    const data = await r.json();
+    
+    if (data.user) {
+        console.log("✅ User data received for:", data.user.model, data.user.device_id);
+        // 필요하다면 여기서 사용자 정보를 Context/State에 저장하는 로직을 추가할 수 있습니다.
+    }
+    
+    // vehicles 데이터만 추출하여 mapToVehicles에 전달
+    if (data.vehicles && Array.isArray(data.vehicles)) {
+        return mapToVehicles(data.vehicles);
+    }
+    return [];
+
+  } catch (e) { 
+    console.error(`${path} fetch error:`, e); 
+    return []; 
   }
-  return [];
 }
 
 /********************** 즐겨찾기 저장 **********************/
@@ -374,11 +393,11 @@ const HomeScreen = () => {
     };
   }, [vehicles]);
 
-  // ✨ 사용자 위치 마커 렌더링 및 업데이트 (수정된 최종 로직)
+  // ✨ 사용자 위치 마커 렌더링 및 업데이트 (오류 수정 로직)
   useEffect(() => {
     const kakao = window.kakao;
     if (!kakao?.maps || !mapRef.current || !userLocation) {
-        // 위치 정보가 사라지면 마커를 지도에서 분리
+        // 위치 정보가 없거나 지도/API가 준비되지 않았으면 마커를 지도에서 분리
         userMarkerRef.current?.setMap(null);
         return;
     }
@@ -397,7 +416,6 @@ const HomeScreen = () => {
         userMarkerRef.current = marker;
     } else {
         // 2. 마커가 있으면 위치 업데이트 및 지도에 다시 연결
-        // 홈 화면 복귀 시 마커 객체는 존재하지만 지도에 연결이 끊어져 있을 수 있으므로, 명시적으로 다시 연결
         if (userMarkerRef.current.getMap() !== mapRef.current) {
             userMarkerRef.current.setMap(mapRef.current); 
         }
