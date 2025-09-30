@@ -1,8 +1,8 @@
 // server.js
-// EveryBus 백엔드 — 완성본
+// EveryBus 백엔드 — 수정본
 // - 정류장 목록: GET /stops, /bus-info
-// - 모든 버스 최신 위치: GET /bus/location  ← 프론트에서 사용
-// - GPS 디바이스가 위치 업로드: POST /bus/location/:imei
+// - 모든 버스 최신 위치: GET /bus/location  ← 프론트가 폴링
+// - GPS 디바이스 위치 업로드: POST /bus/location/:imei
 // - 헬스체크: GET /health
 
 const express = require("express");
@@ -14,15 +14,14 @@ const PORT = process.env.PORT || 5000;
 // ---------------------- 미들웨어 ----------------------
 app.use(express.json());
 
-// CORS (프리플라이트 포함)
+// CORS (프리플라이트 포함) — 프론트 배포 도메인 허용
 app.use(
   cors({
     origin: [
-      "http://localhost:3000",          // CRA dev
-      "http://localhost:5173",          // Vite dev
-      "http://localhost:5000",          // 같은 포트 프론트 띄울 때
-      "https://project-1-ek9j.onrender.com", // ✅ 실제 프론트 배포 도메인
-      // "https://everybus4.onrender.com",   // 예전/보조 도메인 쓰면 열어두기
+      "http://localhost:3000",            // CRA dev
+      "http://localhost:5173",            // Vite dev
+      "http://localhost:5000",            // (필요 시) 동일 포트 프론트
+      "https://everybus4.onrender.com",   // ✅ 실제 프론트 배포 도메인
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -33,8 +32,8 @@ app.use(
 // ---------------------- 데이터(임시) ----------------------
 // 임시 정류장 데이터 (안산대 근처 좌표)
 const BUS_POINTS = [
-  { id: "1", name: "상록수역",     lat: 37.303611793223766, lng: 126.8668823 },
-  { id: "2", name: "안산대학교",   lat: 37.309534355054419, lng: 126.873 },
+  { id: "1", name: "상록수역",   lat: 37.303611793223766, lng: 126.8668823 },
+  { id: "2", name: "안산대학교", lat: 37.309534355054419, lng: 126.873 },
 ];
 
 // 초기 버스 목록 (위치 좌표 제거)
@@ -50,8 +49,8 @@ const BUS_LOCATIONS = {};
 INITIAL_VEHICLES_DATA.forEach((v) => {
   BUS_LOCATIONS[v.id] = {
     ...v,
-    lat: 37.3070,     // 초기 기본 위도 (안산대 근처)
-    lng: 126.8700,    // 초기 기본 경도
+    lat: 37.3070,   // 초기 기본 위도 (안산대 근처)
+    lng: 126.8700,  // 초기 기본 경도
     heading: 0,
     updatedAt: Date.now(),
   };
@@ -121,9 +120,7 @@ app.post("/bus/location/:imei", (req, res) => {
       heading: Number.isFinite(heading) ? heading : 0,
       updatedAt: Date.now(),
     };
-    return res
-      .status(202)
-      .json({ message: `새 버스(${busId}) 위치 기록 시작` });
+    return res.status(202).json({ message: `새 버스(${busId}) 위치 기록 시작` });
   }
 
   // 업데이트
