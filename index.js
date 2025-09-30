@@ -1,5 +1,5 @@
 // server.js
-// EveryBus 백엔드 — 수정본
+// EveryBus 백엔드 — null 초기화 버전
 // - 정류장 목록: GET /stops, /bus-info
 // - 모든 버스 최신 위치: GET /bus/location  ← 프론트가 폴링
 // - GPS 디바이스 위치 업로드: POST /bus/location/:imei
@@ -36,23 +36,22 @@ const BUS_POINTS = [
   { id: "2", name: "안산대학교", lat: 37.309534355054419, lng: 126.873 },
 ];
 
-// 초기 버스 목록 (위치 좌표 제거)
-// '350599638756152' 디바이스가 실GPS 셔틀로 쓰이는 IMEI
+// 초기 버스 목록
 const INITIAL_VEHICLES_DATA = [
-  { id: "350599638756152", route: "셔틀A" }, // 실GPS
+  { id: "350599638756152", route: "셔틀A" }, // 네 폰 IMEI (실GPS)
   { id: "v102", route: "셔틀A" },
   { id: "v201", route: "순환" },
 ];
 
-// 메모리 저장소: key = 버스 ID(IMEI), value = { lat, lng, route, heading, updatedAt }
+// 메모리 저장소: key = 버스 ID(IMEI)
 const BUS_LOCATIONS = {};
 INITIAL_VEHICLES_DATA.forEach((v) => {
   BUS_LOCATIONS[v.id] = {
     ...v,
-    lat: 37.3070,   // 초기 기본 위도 (안산대 근처)
-    lng: 126.8700,  // 초기 기본 경도
-    heading: 0,
-    updatedAt: Date.now(),
+    lat: null,        // ⭕ 처음엔 null → 프론트에 표시 안 됨
+    lng: null,
+    heading: null,
+    updatedAt: null,
   };
 });
 
@@ -85,7 +84,7 @@ app.get("/stops", (req, res) => {
 // ✅ 프론트가 폴링하는 엔드포인트: 모든 버스의 최신 위치 배열로 반환
 app.get("/bus/location", (req, res) => {
   const vehicles = Object.values(BUS_LOCATIONS)
-    .filter((v) => Number.isFinite(v.lat) && Number.isFinite(v.lng))
+    .filter((v) => Number.isFinite(v.lat) && Number.isFinite(v.lng)) // null 좌표 제외
     .map((v) => ({
       id: v.id,
       route: v.route,
@@ -139,7 +138,7 @@ app.post("/bus/location/:imei", (req, res) => {
 app.get("/user/data/:imei", (req, res) => {
   const imei = req.params.imei;
   const vehicles = Object.values(BUS_LOCATIONS)
-    .filter((v) => v.lat != null && v.lng != null)
+    .filter((v) => Number.isFinite(v.lat) && Number.isFinite(v.lng))
     .map((v) => ({
       id: v.id,
       route: v.route,
@@ -155,7 +154,7 @@ app.get("/user/data/:imei", (req, res) => {
   });
 });
 
-// 404 핸들러(선택)
+// 404 핸들러
 app.use((req, res) => {
   res.status(404).json({ error: "Not Found" });
 });
