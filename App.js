@@ -2,11 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState, createContext, useContext } from "react";
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from "react-router-dom";
-// 1. Tailwind 임포트 제거
-// import 'tailwindcss/tailwind.css'; 
-
-// 2. App.css 임포트 추가
-import './App.css';
+import './App.css'; // App.css 임포트
 
 /**
  * EveryBus React UI — 최종 통합 및 수정 버전
@@ -193,7 +189,7 @@ const saveFavIds = (set) => { /* ... (내용 동일) ... */
 };
 
 /********************** 공통 UI **********************/
-// 3. className을 모두 시맨틱하게 변경
+// ... (변경 없음) ...
 const Page = ({ title, right, children }) => {
   const nav = useNavigate();
   return (
@@ -210,7 +206,7 @@ const Page = ({ title, right, children }) => {
     </div>
   );
 };
-
+// ... (변경 없음) ...
 const Tabbar = () => {
   const { pathname } = useLocation();
   const isActive = (to) => pathname === to || (to === "/" && pathname.startsWith("/stop/"));
@@ -232,6 +228,7 @@ const Tabbar = () => {
 };
 
 /********************** 스플래시 **********************/
+// ... (변경 없음) ...
 const SplashScreen = () => {
   const nav = useNavigate();
   useEffect(() => {}, []);
@@ -249,7 +246,7 @@ const SplashScreen = () => {
 /********************** 홈 (지도 + 목록 + 차량 오버레이 관리) **********************/
 const HomeScreen = () => {
   const { stops, setStops, search, setSearch, favIds, setFavIds, vehicles, setVehicles, userLocation, visibleVehicleIds, setVisibleVehicleIds } = useApp();
-  const nav = useNavigate();
+  const nav = useNavigate(); // ⭐ nav(useNavigate)를 사용합니다.
   const mapEl = useRef(null);
   const mapRef = useRef(null);
   const stopMarkersRef = useRef([]);
@@ -375,7 +372,6 @@ const HomeScreen = () => {
     if (!userMarkerRef.current) {
         const marker = new kakao.maps.CustomOverlay({
             position: pos,
-            // (참고) 사용자 마커는 Tailwind 대신 인라인 스타일을 쓰고 계셔서 그대로 둡니다.
             content: '<div style="background-color:blue; width:12px; height:12px; border-radius:50%; border:2px solid white; box-shadow:0 0 5px rgba(0,0,0,0.5); z-index:100;"></div>',
             yAnchor: 0.5,
             xAnchor: 0.5
@@ -405,15 +401,8 @@ const HomeScreen = () => {
     });
   };
 
-  const handleListStopClick = (stop) => { /* ... (변경 없음) ... */
-    const kakao = window.kakao;
-    if (mapRef.current && kakao?.maps) {
-        const pos = new kakao.maps.LatLng(stop.lat, stop.lng);
-        mapRef.current.setCenter(pos);
-        mapRef.current.setLevel(3);
-    }
-    setVisibleVehicleIds([REAL_SHUTTLE_IMEI]);
-  };
+  // 💡 이 함수(handleListStopClick)는 이제 목록에서 사용되지 않습니다. (지도 마커 클릭 시에는 여전히 위 useEffect에서 사용됨)
+  // const handleListStopClick = (stop) => { ... };
 
   return (
     <Page title="EVERYBUS">
@@ -457,8 +446,10 @@ const HomeScreen = () => {
             role="button"
             tabIndex={0}
             className="bus-item"
-            onClick={() => handleListStopClick(stop)}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleListStopClick(stop); }}
+            
+            // ⭐ 변경점 1: onClick 이벤트를 상세 페이지로 이동하도록 변경
+            onClick={() => nav(`/stop/${stop.id}`)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") nav(`/stop/${stop.id}`); }}
           >
             <div className="bus-item-content">
               <div>
@@ -529,6 +520,7 @@ const StopDetail = () => {
       title={stop.name}
       right={<button onClick={() => nav("/alerts")} className="header-link-btn">알림설정</button>}
     >
+      {/* 1. 다음 도착 예정 */}
       <div className="card">
         <div className="card-subtitle">다음 도착 예정</div>
         <div className="arrival-tags">
@@ -538,6 +530,39 @@ const StopDetail = () => {
         </div>
       </div>
 
+      {/* ⭐ 변경점 2: 시간표 카드 추가 */}
+      <div className="card">
+        <div className="card-subtitle">시간표</div>
+        {/* 이 div 안에 친구분이 작업하신 시간표 컴포넌트를 나중에 넣으면 됩니다. */}
+        <div className="timetable-placeholder">
+          <table>
+            <thead>
+              <tr>
+                <th>노선</th>
+                <th>방향</th>
+                <th>시간</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>A노선</td>
+                <td>상록수역 방면</td>
+                <td>09:00, 09:30, 10:00 ...</td>
+              </tr>
+              <tr>
+                <td>B노선</td>
+                <td>학교 순환</td>
+                <td>09:15, 09:45, 10:15 ...</td>
+              </tr>
+              <tr>
+                <td colSpan="3">(시간표 데이터가 여기에 표시됩니다)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 3. 정류장 위치 */}
       <div className="card">
         <div className="card-subtitle">정류장 위치</div>
         <div
@@ -549,6 +574,7 @@ const StopDetail = () => {
         </div>
       </div>
 
+      {/* 4. 노선 정보 */}
       <div className="card">
         <div className="card-subtitle">노선 & 최근 도착 기록</div>
         <ul className="info-list">
@@ -561,6 +587,7 @@ const StopDetail = () => {
 };
 
 /********************** 즐겨찾기 **********************/
+// ... (변경 없음) ...
 const FavoritesScreen = () => {
   const { stops, setVisibleVehicleIds } = useApp();
   const nav = useNavigate();
@@ -600,6 +627,7 @@ const FavoritesScreen = () => {
 };
 
 /********************** 알림 설정 **********************/
+// ... (변경 없음) ...
 const AlertsScreen = () => {
   const { setVisibleVehicleIds } = useApp();
   const [enabled, setEnabled] = useState(true);
@@ -642,6 +670,7 @@ const AlertsScreen = () => {
 };
 
 /********************** 앱 루트 **********************/
+// ... (변경 없음) ...
 export default function App() {
   const [stops, setStops] = useState([]);
   const [search, setSearch] = useState("");
@@ -685,6 +714,7 @@ export default function App() {
   );
 }
 
+// ... (변경 없음) ...
 const NotFound = () => (
   <div className="not-found-page">
     <div className="not-found-content">
