@@ -1,0 +1,639 @@
+/* === 1. 글로벌 & 기본 스타일 === */
+:root {
+  /* 색상 팔레트 */
+  --primary-color: #007AFF; /* 메인 컬러 (파란색) */
+  --background-color: #F8F9FA; /* 앱 전체 배경 (연한 회색) */
+  --card-background: #FFFFFF; /* 카드 배경 (흰색) */
+  --text-color: #333333; /* 기본 텍스트 */
+  --text-light: #FFFFFF; /* 밝은 텍스트 (헤더 위) */
+  --text-muted: #6c757d; /* 연한 텍스트 (도착 정보 등) */
+  --border-color: #E0E0E0; /* 테두리색 */
+  --shadow-light: 0 4px 12px rgba(0, 0, 0, 0.06); /* 부드러운 그림자 */
+}
+
+/* box-sizing을 적용해 패딩/보더 계산을 쉽게 합니다. */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 
+               'Noto Sans KR', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 링크 기본 스타일 제거 */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* 버튼 기본 스타일 초기화 */
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* === 2. 공통 UI (Page, Tabbar) === */
+.page-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  max-width: 640px; /* PC에서도 너무 넓어지지 않게 */
+  margin: 0 auto; /* 중앙 정렬 */
+  background-color: var(--card-background); /* 모바일에서는 흰색 배경 */
+}
+
+.page-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: var(--primary-color);
+  color: var(--text-light);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+.page-header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px; /* 14 * 4 */
+  padding: 0 16px;
+}
+
+.page-title {
+  font-size: 1.125rem; /* 18px */
+  font-weight: 600;
+}
+
+.header-back-btn {
+  font-size: 1.25rem;
+  color: var(--text-light);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.header-back-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.header-right {
+  min-width: 2rem;
+  text-align: right;
+}
+
+/* 헤더에 있는 알림설정 버튼 등 */
+.header-link-btn {
+  font-size: 0.875rem; /* 14px */
+  color: var(--text-light);
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.header-link-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.page-content {
+  flex-grow: 1; /* 남은 공간을 모두 차지 */
+  padding: 20px 16px;
+  /* 하단 탭바 높이만큼 여백 확보 */
+  padding-bottom: 80px; 
+}
+
+.tab-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background-color: var(--card-background);
+  border-top: 1px solid var(--border-color);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.tab-bar-inner {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  padding: 8px;
+}
+
+.tab-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  transition: all 0.2s ease;
+}
+.tab-icon {
+  font-size: 1.25rem; /* 20px */
+}
+.tab-label {
+  font-size: 0.75rem; /* 12px */
+  font-weight: 500;
+}
+
+.tab-item:hover {
+  background-color: var(--background-color);
+  color: #333;
+}
+
+/* 활성화된 탭 스타일 */
+.tab-item.active {
+  background-color: var(--primary-color);
+  color: var(--text-light);
+}
+
+/* === 3. 스플래시 화면 === */
+.splash-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(to bottom, #E6F7FF, var(--card-background));
+  padding: 32px;
+}
+.splash-title {
+  font-size: 2.25rem; /* 36px */
+  font-weight: 800;
+  color: var(--primary-color);
+  margin-bottom: 8px;
+}
+.splash-subtitle {
+  color: var(--text-muted);
+  margin-bottom: 32px;
+}
+.splash-button {
+  padding: 12px 24px;
+  border-radius: 9999px;
+  box-shadow: var(--shadow-light);
+  background-color: var(--primary-color);
+  color: var(--text-light);
+  font-size: 1rem;
+  font-weight: 600;
+  transition: background-color 0.2s ease;
+}
+.splash-button:hover {
+  background-color: #0056b3;
+}
+
+/* === 4. 홈 & 즐겨찾기 (검색, 지도, 목록) === */
+.search-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 12px 16px;
+  box-shadow: var(--shadow-light);
+  margin-bottom: 20px;
+}
+.search-input {
+  flex-grow: 1;
+  border: none;
+  outline: none;
+  font-size: 0.9rem;
+}
+.search-clear-btn {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+.search-clear-btn:hover {
+  color: var(--text-color);
+}
+
+.map-container {
+  width: 100%;
+  border-radius: 16px;
+  box-shadow: var(--shadow-light);
+  border: 1px solid var(--border-color);
+  background-color: #EFEFEF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden; /* Kakao 지도가 둥근 모서리를 넘지 않도록 */
+}
+.map-loading-text {
+  color: var(--text-muted);
+}
+
+.map-info-text {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem; /* 12px */
+  color: var(--text-muted);
+  margin: 8px 4px 16px 4px;
+}
+.error-text {
+  color: #DC3545; /* 빨간색 */
+}
+
+/* 버스 목록 */
+.bus-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px; /* 아이템 간 간격 */
+}
+
+.bus-item {
+  width: 100%;
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: var(--shadow-light);
+  transition: all 0.15s ease-in-out;
+  cursor: pointer;
+}
+.bus-item:hover {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  border-color: var(--primary-color);
+  transform: translateY(-2px);
+}
+.bus-item:active {
+  transform: scale(0.99);
+}
+
+.bus-item-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+}
+.bus-item-name {
+  font-weight: 600;
+  color: var(--text-color);
+}
+.bus-item-arrival {
+  font-size: 0.875rem; /* 14px */
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.favorite-btn {
+  font-size: 1.25rem; /* 20px */
+  padding: 8px;
+  border-radius: 50%;
+}
+.favorite-btn:hover {
+  background-color: var(--background-color);
+}
+
+.list-empty-text {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 40px 0;
+}
+
+/* === 5. 정류장 상세 & 알림 (카드 UI) === */
+.card {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--shadow-light);
+  margin-bottom: 16px; /* 카드 간 간격 */
+}
+
+.card-subtitle {
+  font-size: 0.875rem; /* 14px */
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.arrival-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.arrival-tag {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background-color: var(--background-color);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.info-list {
+  list-style: disc;
+  padding-left: 20px;
+  font-size: 0.875rem;
+  color: var(--text-color);
+  line-height: 1.6;
+}
+
+/* 알림 설정 */
+.settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.settings-item-title {
+  font-weight: 600;
+}
+.toggle-btn {
+  padding: 8px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+.toggle-btn.active {
+  background-color: var(--primary-color);
+  color: var(--text-light);
+  border-color: var(--primary-color);
+}
+
+.input-label {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+.basic-input {
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 1rem;
+}
+.basic-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+}
+
+.info-text {
+  font-size: 0.75rem;
+  color: #AAAAAA;
+  margin-top: 8px;
+}
+
+/* === 6. Not Found 페이지 === */
+.not-found-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+.not-found-content {
+  text-align: center;
+}
+.not-found-icon {
+  font-size: 2.5rem; /* 40px */
+  margin-bottom: 8px;
+}
+.not-found-title {
+  font-weight: 600;
+}
+.link {
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
+/* === 7. 시간표 (추가) === */
+.timetable-placeholder {
+  width: 100%;
+  overflow-x: auto; /* 테이블이 길어지면 가로 스크롤 */
+}
+.timetable-placeholder table {
+  width: 100%;
+  border-collapse: collapse; /* 테두리 한 줄로 */
+  font-size: 0.875rem;
+}
+.timetable-placeholder th,
+.timetable-placeholder td {
+  padding: 10px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+.timetable-placeholder th {
+  background-color: var(--background-color);
+  font-weight: 600;
+}
+/* 예시용 마지막 줄 스타일 */
+.timetable-placeholder tbody tr:last-child td {
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.8rem;
+}
+
+
+/* === 8. BusStop (기사님 운행 페이지) 스타일 === */
+
+.selectable-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px; /* 아이템 간 간격 */
+}
+
+.selectable-list input[type="radio"] {
+  display: none;
+}
+
+.selectable-item {
+  display: block;
+  padding: 16px;
+  border: 2px solid var(--border-color); /* 기본 테두리 */
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 500;
+  position: relative;
+  padding-left: 45px; /* 체크박스 아이콘 들어갈 공간 확보 */
+}
+.item-name { 
+  color: var(--text-color);
+}
+
+.selectable-item::before {
+  content: '☐'; /* 빈 네모 */
+  position: absolute;
+  left: 16px;
+  top: 15px; /* 텍스트와 세로 정렬 */
+  font-size: 1.2rem;
+  color: var(--border-color);
+}
+
+.selectable-item:hover {
+  border-color: #AAAAAA;
+  background-color: var(--background-color);
+}
+
+.selectable-item.selected {
+  border-color: var(--primary-color);
+  background-color: #f0f7ff; /* 아주 연한 파란색 */
+}
+
+.selectable-item.selected .item-name {
+  font-weight: 700;
+  color: var(--primary-color);
+}
+
+.selectable-item.selected::before {
+  content: '☑'; /* 체크된 네모 */
+  color: var(--primary-color);
+}
+
+/* 메인 액션 버튼 (운행 시작/종료) */
+.button-primary {
+  width: 100%;
+  padding: 16px;
+  margin-top: 20px;
+  border: none;
+  border-radius: 12px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.button-primary.start {
+  background-color: var(--primary-color);
+  color: var(--text-light);
+  box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+}
+.button-primary.start:hover {
+  background-color: #0056b3; 
+}
+
+.button-primary.stop {
+  background-color: #DC3545; /* 빨간색 */
+  color: var(--text-light);
+  box-shadow: 0 4px 12px rgba(220, 53, 69, 0.3);
+}
+.button-primary.stop:hover {
+  background-color: #c82333;
+}
+
+.button-primary:disabled {
+  background-color: var(--border-color);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.status-display {
+  font-weight: 600;
+  font-size: 1.1rem;
+  padding-top: 5px;
+}
+.status-display.driving { 
+  color: #28a745; /* 초록색 */
+}
+.status-display.stopped { 
+  color: var(--text-muted);
+}
+
+
+/* === 9. DrivingScreen (운행 중 화면) 스타일 추가 === */
+
+/* 운행 정보 리스트 */
+.driving-info-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 1rem;
+}
+.info-label {
+  font-weight: 500;
+  color: var(--text-muted);
+  display: flex; /* 이모지 정렬 */
+  align-items: center;
+  gap: 8px;
+}
+.info-value {
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+/* ⭐ 탑승자 수 카운터 (수정됨) */
+.passenger-counter {
+  display: flex;
+  flex-direction: column; /* 세로 정렬 */
+  align-items: center; /* 가운데 정렬 */
+  justify-content: center;
+  gap: 10px; /* 숫자와 버튼 사이 간격 */
+}
+.count-display {
+  font-size: 3rem; /* 48px */
+  font-weight: 700;
+  color: var(--primary-color);
+  text-align: center;
+}
+.count-btn { /* (이 클래스는 이제 사용되지 않지만 만약을 위해 남겨둡니다) */
+  width: 60px;
+  height: 60px;
+  border-radius: 50%; 
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  font-size: 2.5rem;
+  font-weight: 300;
+  color: var(--text-color);
+  transition: background-color 0.2s ease;
+}
+.count-btn:hover {
+  background-color: #e2e6ea;
+}
+.count-btn:active {
+  transform: scale(0.95);
+}
+
+/* ⭐ QR 코드 모달 스타일 (추가됨) */
+.qr-modal-overlay {
+  position: fixed; /* 화면 전체를 덮음 */
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6); /* 반투명 검은색 배경 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+
+.qr-modal-content {
+  background-color: var(--card-background);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  width: 100%;
+  max-width: 350px; /* 모달 최대 너비 */
+  text-align: center;
+}
+
+.qr-placeholder {
+  margin: 16px 0;
+  padding: 20px;
+  background-color: var(--background-color);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.qr-placeholder img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
