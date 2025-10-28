@@ -1,5 +1,5 @@
 // server.js
-// EveryBus 백엔드 — MongoDB Atlas (busdb.BusStop) 대응 + 강제 CORS
+// EveryBus 백엔드 — MongoDB Atlas (busdb) + 강제 CORS + 시간표/차량 API
 
 const express = require("express");
 const cors = require("cors");
@@ -9,7 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 /* ---------------------- CORS (전면 허용 + 프리플라이트) ---------------------- */
-// 운영에서는 "*" 대신 정확한 도메인만 허용 권장: "https://everybus4.onrender.com"
+// 운영 전환 시에는 "*" 대신 정확한 도메인만 열기 권장: "https://everybus4.onrender.com"
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
@@ -17,10 +17,8 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
-/* -------------------------------------------------------------------------- */
-
 app.use(express.json());
-app.use(cors()); // 있어도 됨(위 강제 헤더가 우선)
+app.use(cors()); // 보조용
 
 /* ---------------------- MongoDB 연결 ---------------------- */
 const MONGO_URI =
@@ -28,10 +26,10 @@ const MONGO_URI =
   "mongodb+srv://master:ULUoh16HeSO0m0RJ@cluster0.rpczfaj.mongodb.net/busdb?appName=Cluster0";
 
 /* ---------------------- 스키마 정의 ---------------------- */
-// 🚌 차량
+// 🚌 실시간 차량 위치 (IMEI 기준)
 const VehicleSchema = new mongoose.Schema(
   {
-    id: { type: String, required: true, unique: true },
+    id: { type: String, required: true, unique: true }, // IMEI/디바이스 ID
     route: { type: String, default: "미정" },
     lat: { type: Number, default: null },
     lng: { type: Number, default: null },
@@ -42,12 +40,12 @@ const VehicleSchema = new mongoose.Schema(
 );
 const Vehicle = mongoose.model("Vehicle", VehicleSchema);
 
-// 🚏 정류장 (busdb.BusStop)
+// 🚏 정류장 (GeoJSON: { type: "Point", coordinates: [lng, lat] })
 const BusStopSchema = new mongoose.Schema(
   {
     정류장명: { type: String, required: true },
     위치: {
-      type: Object, // GeoJSON: { type: "Point", coordinates: [lng, lat] }
+      type: Object,
       required: true,
       default: { type: "Point", coordinates: [0, 0] },
     },
@@ -55,6 +53,22 @@ const BusStopSchema = new mongoose.Schema(
   { collection: "BusStop", timestamps: false }
 );
 const BusStop = mongoose.model("BusStop", BusStopSchema);
+
+// ⏰ 시간표 (기존 busdb.timebus 문서 구조 대응)
+const TimebusSchema = new mongoose.Schema(
+  {
+    routeId: String,            // 예: "ansan-line-1"
+    direction: String,          // 예: "상록수역→대학" 또는 "대학→상록수역"
+    origin: String,             // 출발 정류장명
+    destination: String,        // 도착 정류장명
+    days: [String],
+    daysHash: String,           // "Mon|Tue|Wed|Thu|Fri"
+    times: [String],            // ["08:40","08:45", ...]
+    updatedAt: Date
+  },
+  { collection: "timebus", timestamps: false }
+);
+const Timebus = mongoose.model("Timebus", TimebusSchema);
 
 /* ---------------------- 기본 라우트 ---------------------- */
 app.get("/", (_req, res) => res.type("text/plain").send("EVERYBUS API OK"));
@@ -71,8 +85,6 @@ app.get("/health", (_req, res) => {
 app.get("/stops", async (_req, res) => {
   try {
     const raw = await BusStop.find({}).select("정류장명 위치 -_id").lean();
-    console.log("[/stops] raw count:", raw.length, "sample:", raw[0]);
-
     const formatted = raw
       .map((s, i) => {
         const coords = Array.isArray(s?.위치?.coordinates) ? s.위치.coordinates : [NaN, NaN];
@@ -91,18 +103,12 @@ app.get("/stops", async (_req, res) => {
       })
       .filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lng));
 
-    console.log("[/stops] formatted count:", formatted.length);
-
     if (formatted.length === 0) {
-      console.warn("[/stops] no valid docs → sending fallback");
       return res.json([
-        { id: "1", name: "안산대1", lat: 37.30927735109936, lng: 126.87543411783554 },
-        { id: "2", name: "상록수역",   lat: 37.303611793223766, lng: 126.8668823, 
-          id: "3", name: "안산대2",   lat: 126.87662413801725, lng: 126.87662413801725
-        },
+        { id: "1", name: "안산대학교", lat: 37.3308, lng: 126.8398, nextArrivals: ["5분 후", "15분 후"] },
+        { id: "2", name: "상록수역",   lat: 37.3175, lng: 126.8660, nextArrivals: ["8분 후", "18분 후"] },
       ]);
     }
-
     res.json(formatted);
   } catch (e) {
     console.error("❌ /stops error:", e);
@@ -117,7 +123,7 @@ app.get("/debug/stops-raw", async (_req, res) => {
 });
 
 /* ---------------------- 차량 위치 API ---------------------- */
-// GET: 현재 위치 목록
+// 현재 위치 목록
 app.get("/bus/location", async (_req, res) => {
   try {
     const vehicles = await Vehicle.find({ lat: { $ne: null }, lng: { $ne: null } })
@@ -130,7 +136,7 @@ app.get("/bus/location", async (_req, res) => {
   }
 });
 
-// POST: GPS 기기 업로드
+// GPS 기기 업로드
 app.post("/bus/location/:imei", async (req, res) => {
   const busId = req.params.imei;
   const { lat, lng, heading } = req.body;
@@ -154,6 +160,73 @@ app.post("/bus/location/:imei", async (req, res) => {
   } catch (e) {
     console.error("❌ 위치 업데이트 오류:", e.message);
     res.status(500).json({ error: "위치 업데이트에 실패했습니다." });
+  }
+});
+
+/* ---------------------- (신규) 선택용 버스 목록 API ---------------------- */
+// 프론트의 /vehicles 호출 대응 (timebus에 존재하는 routeId를 기반으로 목록 생성)
+app.get("/vehicles", async (_req, res) => {
+  try {
+    const docs = await Timebus.find({}).select("routeId -_id").lean();
+    const uniq = [...new Set(docs.map(d => d.routeId).filter(Boolean))];
+
+    // 표시명 매핑 (원하면 여기서 이름 바꾸기)
+    const nameMap = {
+      "ansan-line-1": "안산대1",
+      "ansan-line-2": "안산대2",
+    };
+
+    const list = uniq.map((id, idx) => ({
+      id,                              // 내부용 식별자
+      name: nameMap[id] || id,         // 사용자 표시 이름
+      order: idx
+    }));
+
+    res.json(list);
+  } catch (e) {
+    console.error("GET /vehicles error:", e);
+    res.status(500).json({ error: "vehicles 조회 실패" });
+  }
+});
+
+/* ---------------------- (신규) 시간표 조회 API ---------------------- */
+// 쿼리 예시:
+//   /timebus?routeId=ansan-line-1&direction=상록수역→대학
+//   /timebus?direction=대학→상록수역
+//   /timebus?origin=상록수역&destination=대학
+app.get("/timebus", async (req, res) => {
+  try {
+    const { routeId, direction, origin, destination } = req.query;
+    const q = {};
+    if (routeId) q.routeId = routeId;
+    if (direction) q.direction = direction;
+    if (origin) q.origin = origin;
+    if (destination) q.destination = destination;
+
+    // 가장 구체적인 조건부터 탐색
+    let doc = await Timebus.findOne(q).lean();
+
+    // 보완 탐색: direction만으로도 시도
+    if (!doc && direction && (q.routeId || q.origin || q.destination)) {
+      doc = await Timebus.findOne({ direction }).lean();
+    }
+
+    if (!doc) {
+      return res.status(404).json({ error: "timebus 문서를 찾지 못했습니다.", query: q });
+    }
+
+    res.json({
+      routeId: doc.routeId,
+      direction: doc.direction,
+      origin: doc.origin,
+      destination: doc.destination,
+      daysHash: doc.daysHash,
+      times: doc.times || [],
+      updatedAt: doc.updatedAt || null,
+    });
+  } catch (e) {
+    console.error("GET /timebus error:", e);
+    res.status(500).json({ error: "timebus 조회 실패" });
   }
 });
 
