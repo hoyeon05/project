@@ -1,5 +1,5 @@
 // server.js
-// EveryBus 백엔드 — MongoDB Atlas (busdb) + 강제 CORS + 시간표/차량 API
+// EveryBus 백엔드 — MongoDB Atlas(busdb) + CORS + 시간표/차량 API (최종본)
 
 const express = require("express");
 const cors = require("cors");
@@ -9,7 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 /* ---------------------- CORS (전면 허용 + 프리플라이트) ---------------------- */
-// 운영 전환 시에는 "*" 대신 정확한 도메인만 열기 권장: "https://everybus4.onrender.com"
+// 운영 전환 시에는 "*" 대신 정확한 프론트 도메인만 열기 권장: "https://everybus4.onrender.com"
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
@@ -54,7 +54,7 @@ const BusStopSchema = new mongoose.Schema(
 );
 const BusStop = mongoose.model("BusStop", BusStopSchema);
 
-// ⏰ 시간표 (기존 busdb.timebus 문서 구조 대응)
+// ⏰ 시간표 (busdb.timebus 문서 구조 대응)
 const TimebusSchema = new mongoose.Schema(
   {
     routeId: String,            // 예: "ansan-line-1"
@@ -163,23 +163,28 @@ app.post("/bus/location/:imei", async (req, res) => {
   }
 });
 
-/* ---------------------- (신규) 선택용 버스 목록 API ---------------------- */
-// 프론트의 /vehicles 호출 대응 (timebus에 존재하는 routeId를 기반으로 목록 생성)
+/* ---------------------- (보강) 선택용 버스 목록 API ---------------------- */
+// - timebus에 routeId가 있으면 그걸 사용
+// - 없으면 direction("상록수역→대학"/"대학→상록수역")으로도 목록 생성
+// - 보기 좋은 이름 매핑(nameMap)으로 사용자가 보는 이름을 치환
 app.get("/vehicles", async (_req, res) => {
   try {
-    const docs = await Timebus.find({}).select("routeId -_id").lean();
-    const uniq = [...new Set(docs.map(d => d.routeId).filter(Boolean))];
+    const docs = await Timebus.find({}).select("routeId direction -_id").lean();
 
-    // 표시명 매핑 (원하면 여기서 이름 바꾸기)
+    const rawIds = docs.map(d => d.routeId || d.direction).filter(Boolean);
+    const uniqIds = [...new Set(rawIds)];
+
     const nameMap = {
       "ansan-line-1": "안산대1",
       "ansan-line-2": "안산대2",
+      "상록수역→대학": "셔틀A",
+      "대학→상록수역": "셔틀B",
     };
 
-    const list = uniq.map((id, idx) => ({
-      id,                              // 내부용 식별자
-      name: nameMap[id] || id,         // 사용자 표시 이름
-      order: idx
+    const list = uniqIds.map((id, i) => ({
+      id,                       // 내부 식별용 (routeId 또는 direction)
+      name: nameMap[id] || id,  // 사용자 표시용 이름
+      order: i,
     }));
 
     res.json(list);
@@ -189,11 +194,10 @@ app.get("/vehicles", async (_req, res) => {
   }
 });
 
-/* ---------------------- (신규) 시간표 조회 API ---------------------- */
-// 쿼리 예시:
-//   /timebus?routeId=ansan-line-1&direction=상록수역→대학
-//   /timebus?direction=대학→상록수역
-//   /timebus?origin=상록수역&destination=대학
+/* ---------------------- 시간표 조회 API ---------------------- */
+// 예시: /timebus?routeId=ansan-line-1&direction=상록수역→대학
+//      /timebus?direction=대학→상록수역
+//      /timebus?origin=상록수역&destination=대학
 app.get("/timebus", async (req, res) => {
   try {
     const { routeId, direction, origin, destination } = req.query;
@@ -203,7 +207,6 @@ app.get("/timebus", async (req, res) => {
     if (origin) q.origin = origin;
     if (destination) q.destination = destination;
 
-    // 가장 구체적인 조건부터 탐색
     let doc = await Timebus.findOne(q).lean();
 
     // 보완 탐색: direction만으로도 시도
