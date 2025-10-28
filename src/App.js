@@ -1,6 +1,6 @@
-// App.js — EveryBus React UI (Render 자동연결 + GPS 안정화본)
-import React, { useEffect, useRef, useState, createContext, useContext } from "react";
-import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation } from "react-router-dom";
+// App.js — EveryBus React UI (정류장 → 상세 전환 + 실시간 버스 표시)
+import React, { useEffect, useRef, useState, createContext, useContext, useMemo } from "react";
+import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from "react-router-dom";
 import "./App.css";
 
 /********************** 환경값 **********************/
@@ -41,15 +41,13 @@ async function loadKakaoMaps() {
     const s = document.createElement("script");
     s.src =
       "https://dapi.kakao.com/v2/maps/sdk.js?appkey=1befb49da92b720b377651fbf18cd76a&autoload=false&libraries=services";
-    s.onload = () => {
-      window.kakao.maps.load(() => resolve(true));
-    };
+    s.onload = () => window.kakao.maps.load(() => resolve(true));
     s.onerror = reject;
     document.head.appendChild(s);
   });
 }
 
-/********************** 사용자 위치 추적 (개선판) **********************/
+/********************** 사용자 위치 추적 (안정화) **********************/
 function useUserLocation(setUserLocation) {
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -61,19 +59,7 @@ function useUserLocation(setUserLocation) {
 
     const logError = (err) => {
       const map = { 1: "PERMISSION_DENIED", 2: "POSITION_UNAVAILABLE", 3: "TIMEOUT" };
-      console.warn(
-        `GPS Error: ${map[err?.code] || "UNKNOWN"}${err?.message ? ` — ${err.message}` : ""}`
-      );
-    };
-
-    const checkPermission = async () => {
-      try {
-        if (!navigator.permissions) return null;
-        const status = await navigator.permissions.query({ name: "geolocation" });
-        return status.state; // 'granted' | 'prompt' | 'denied'
-      } catch {
-        return null;
-      }
+      console.warn(`GPS Error: ${map[err?.code] || "UNKNOWN"}${err?.message ? ` — ${err.message}` : ""}`);
     };
 
     const getOnce = (opts) =>
@@ -82,37 +68,19 @@ function useUserLocation(setUserLocation) {
       });
 
     const start = async () => {
-      const perm = await checkPermission();
-      if (perm === "denied") {
-        console.warn("GPS Error: 권한 거부됨 — 브라우저/OS 위치 권한을 허용해 주세요.");
-        return;
-      }
-
-      // 1) 저정밀·캐시 허용(성공 확률↑)
+      // 1차: 저정밀(성공확률 ↑)
       try {
-        const pos = await getOnce({
-          enableHighAccuracy: false,
-          timeout: 10000,
-          maximumAge: 60_000,
-        });
-        if (!canceled) {
-          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        }
+        const pos = await getOnce({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
+        if (!canceled) setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
       } catch (e1) {
         logError(e1);
-        // 2) 고정밀
+        // 2차: 고정밀
         try {
-          const pos2 = await getOnce({
-            enableHighAccuracy: true,
-            timeout: 15000,
-            maximumAge: 0,
-          });
-          if (!canceled) {
-            setUserLocation({ lat: pos2.coords.latitude, lng: pos2.coords.longitude });
-          }
+          const pos2 = await getOnce({ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+          if (!canceled) setUserLocation({ lat: pos2.coords.latitude, lng: pos2.coords.longitude });
         } catch (e2) {
           logError(e2);
-          // 3) 폴백(원하는 기본 좌표로 바꿔도 됨)
+          // 3차: 폴백
           if (!canceled) {
             console.warn("⚠️ 위치 폴백 좌표 사용");
             setUserLocation({ lat: 37.3308, lng: 126.8398 });
@@ -120,7 +88,7 @@ function useUserLocation(setUserLocation) {
         }
       }
 
-      // 4) 지속 추적: 처음엔 저정밀 → 10초 후 고정밀로 스위칭
+      // 지속 추적: 처음엔 저정밀 → 10초 후 고정밀
       const watchWith = (opts) =>
         navigator.geolocation.watchPosition(
           (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
@@ -128,28 +96,17 @@ function useUserLocation(setUserLocation) {
           opts
         );
 
-      watchId = watchWith({
-        enableHighAccuracy: false,
-        timeout: 15000,
-        maximumAge: 30_000,
-      });
-
-      const switchTimer = setTimeout(() => {
+      watchId = watchWith({ enableHighAccuracy: false, timeout: 15000, maximumAge: 30000 });
+      const t = setTimeout(() => {
         if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-        watchId = watchWith({
-          enableHighAccuracy: true,
-          timeout: 20000,
-          maximumAge: 5_000,
-        });
-      }, 10_000);
+        watchId = watchWith({ enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 });
+      }, 10000);
 
-      return () => clearTimeout(switchTimer);
+      return () => clearTimeout(t);
     };
 
     let cleanupTimer;
-    start().then((cleanup) => {
-      cleanupTimer = cleanup;
-    });
+    start().then((cleanup) => (cleanupTimer = cleanup));
 
     return () => {
       canceled = true;
@@ -193,13 +150,14 @@ async function fetchVehiclesOnce() {
 }
 
 /********************** UI 공통 **********************/
-const Page = ({ title, children }) => {
+const Page = ({ title, children, right }) => {
   const nav = useNavigate();
   return (
     <div className="page-container">
       <div className="page-header">
         <button onClick={() => nav(-1)} className="header-back-btn">〈</button>
-        <h1>{title}</h1>
+        <h1 className="page-title">{title}</h1>
+        <div className="header-right">{right}</div>
       </div>
       <div className="page-content">{children}</div>
       <Tabbar />
@@ -212,8 +170,8 @@ const Tabbar = () => {
   const isActive = (to) => pathname === to;
   const Item = ({ to, label, icon }) => (
     <Link to={to} className={isActive(to) ? "tab-item active" : "tab-item"}>
-      <span>{icon}</span>
-      <span>{label}</span>
+      <span className="tab-icon">{icon}</span>
+      <span className="tab-label">{label}</span>
     </Link>
   );
   return (
@@ -225,12 +183,12 @@ const Tabbar = () => {
 
 /********************** 홈 **********************/
 const HomeScreen = () => {
-  const { stops, setStops, vehicles, visibleVehicleIds, setVisibleVehicleIds, favIds, userLocation } =
-    useApp();
+  const { stops, setStops, vehicles, visibleVehicleIds, setVisibleVehicleIds, favIds, userLocation } = useApp();
   const mapRef = useRef(null);
   const mapEl = useRef(null);
   const busOverlays = useRef([]);
   const stopMarkers = useRef([]);
+  const nav = useNavigate();
 
   // 지도 초기화
   useEffect(() => {
@@ -262,15 +220,14 @@ const HomeScreen = () => {
       const pos = new window.kakao.maps.LatLng(s.lat, s.lng);
       const marker = new window.kakao.maps.Marker({ position: pos, map: mapRef.current });
       window.kakao.maps.event.addListener(marker, "click", () => {
-        setVisibleVehicleIds([REAL_SHUTTLE_IMEI]);
-        mapRef.current.setCenter(pos);
-        mapRef.current.setLevel(4);
+        // 👉 상세 화면으로 이동
+        nav(`/stop/${s.id}`);
       });
       stopMarkers.current.push(marker);
     });
-  }, [stops, setVisibleVehicleIds]);
+  }, [stops, nav]);
 
-  // 차량 오버레이
+  // (홈 화면에서) 차량 오버레이 — 홈에서는 사용자가 특정 정류장을 선택하지 않았으니 숨김 유지
   useEffect(() => {
     if (!window.kakao?.maps || !mapRef.current) return;
     busOverlays.current.forEach((o) => o.setMap(null));
@@ -294,18 +251,98 @@ const HomeScreen = () => {
       {!userLocation && (
         <div className="hint-box" style={{ padding: 8, fontSize: 14 }}>
           위치를 불러오는 중입니다…<br />
-          • 브라우저 사이트 권한에서 <b>위치 허용</b>을 확인해 주세요.<br />
-          • Windows 설정 → 개인정보 및 보안 → <b>위치</b> → 위치 서비스 ON<br />
-          • 실내/데스크탑에선 정확도가 낮아 타임아웃이 날 수 있어요.
+          • 브라우저 권한에서 <b>위치 허용</b>을 확인해 주세요.<br />
+          • 실내/데스크탑 환경에서는 정확도가 낮을 수 있어요.
         </div>
       )}
+
+      {/* 정류장 리스트 (👉 클릭 시 상세로 이동) */}
       <div className="bus-list">
         {stops.map((s) => (
-          <div key={s.id} className="bus-item">
-            <span>{s.name}</span>
-            <span>{s.favorite ? "⭐" : "☆"}</span>
+          <div
+            key={s.id}
+            className="bus-item"
+            role="button"
+            tabIndex={0}
+            onClick={() => nav(`/stop/${s.id}`)}
+            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && nav(`/stop/${s.id}`)}
+          >
+            <span className="bus-item-name">{s.name}</span>
+            <span className="favorite-btn">{s.favorite ? "⭐" : "☆"}</span>
           </div>
         ))}
+      </div>
+    </Page>
+  );
+};
+
+/********************** 정류장 상세 **********************/
+const StopDetail = () => {
+  const { id } = useParams();
+  const { stops, vehicles, visibleVehicleIds, setVisibleVehicleIds } = useApp();
+
+  const stop = useMemo(() => stops.find((s) => String(s.id) === String(id)), [stops, id]);
+  const mapRef = useRef(null);
+  const mapEl = useRef(null);
+  const busOverlays = useRef([]);
+
+  // 상세 입장 시 버스 보이도록 설정, 나갈 때 숨김
+  useEffect(() => {
+    setVisibleVehicleIds([REAL_SHUTTLE_IMEI]);
+    return () => setVisibleVehicleIds([]);
+  }, [setVisibleVehicleIds]);
+
+  // 지도 초기화 + 정류장 마커
+  useEffect(() => {
+    (async () => {
+      await loadKakaoMaps();
+      if (!stop) return;
+      const kakao = window.kakao;
+      const center = new kakao.maps.LatLng(stop.lat, stop.lng);
+      mapRef.current = new kakao.maps.Map(mapEl.current, { center, level: 4 });
+      new kakao.maps.Marker({ position: center, map: mapRef.current });
+      setTimeout(() => mapRef.current && mapRef.current.relayout(), 0);
+    })();
+  }, [stop]);
+
+  // 버스 오버레이 (상세 화면)
+  useEffect(() => {
+    const kakao = window.kakao;
+    if (!kakao?.maps || !mapRef.current) return;
+    busOverlays.current.forEach((o) => o.setMap(null));
+    busOverlays.current = [];
+    const vis = vehicles.filter((v) => visibleVehicleIds.includes(v.id));
+    vis.forEach((v) => {
+      const pos = new kakao.maps.LatLng(v.lat, v.lng);
+      const overlay = new kakao.maps.CustomOverlay({
+        position: pos,
+        content:
+          `<div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-50%);">
+             <div style="font-size:20px;filter:drop-shadow(0 0 2px rgba(0,0,0,.5));">🚌</div>
+             <div style="font-size:10px;font-weight:bold;line-height:1;margin-top:2px;">${v.id===REAL_SHUTTLE_IMEI?"실시간 셔틀":"버스"}</div>
+           </div>`,
+        yAnchor: 0.5,
+        xAnchor: 0.5,
+      });
+      overlay.setMap(mapRef.current);
+      busOverlays.current.push(overlay);
+    });
+  }, [vehicles, visibleVehicleIds]);
+
+  if (!stop) {
+    return (
+      <Page title="정류장 상세">
+        <div className="list-empty-text">정류장을 찾을 수 없습니다.</div>
+      </Page>
+    );
+  }
+
+  return (
+    <Page title={stop.name} right={<span className="header-right-note">실시간 위치 표시 중</span>}>
+      <div ref={mapEl} style={{ width: "100%", height: MAP_HEIGHT }} className="map-container" />
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="card-subtitle">안내</div>
+        <div className="info-text">이 화면을 여는 동안에만 셔틀 아이콘이 지도에 표시됩니다.</div>
       </div>
     </Page>
   );
@@ -322,12 +359,12 @@ export default function App() {
       return new Set();
     }
   });
-  const [visibleVehicleIds, setVisibleVehicleIds] = useState([]);
+  const [visibleVehicleIds, setVisibleVehicleIds] = useState([]); // 상세에서만 채움
   const [userLocation, setUserLocation] = useState(null);
 
   useUserLocation(setUserLocation);
 
-  // 실시간 차량 폴링
+  // 실시간 차량 폴링 (전역)
   useEffect(() => {
     let alive = true;
     const run = async () => {
@@ -358,6 +395,16 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<HomeScreen />} />
+          <Route path="/stop/:id" element={<StopDetail />} />
+          <Route path="*" element={
+            <div className="not-found-page">
+              <div className="not-found-content">
+                <div className="not-found-icon">🧭</div>
+                <div className="not-found-title">페이지를 찾을 수 없습니다</div>
+                <Link className="link" to="/">홈으로</Link>
+              </div>
+            </div>
+          } />
         </Routes>
       </BrowserRouter>
     </AppContext.Provider>
