@@ -36,7 +36,7 @@ const BusStopSchema = new mongoose.Schema(
     위치: {
       type: Object,
       required: true,
-      default: { type: "Point", coordinates: [0, 0] },
+      default: { type: "Point", coordinates: [lng, lat] },
     },
   },
   { collection: "busstop", timestamps: false }
