@@ -96,8 +96,10 @@ app.get("/stops", async (_req, res) => {
     if (formatted.length === 0) {
       console.warn("[/stops] no valid docs → sending fallback");
       return res.json([
-        { id: "1", name: "안산대학교", lat: 37.3308, lng: 126.8398, nextArrivals: ["5분 후", "15분 후"] },
-        { id: "2", name: "상록수역",   lat: 37.3175, lng: 126.8660, nextArrivals: ["8분 후", "18분 후"] },
+        { id: "1", name: "안산대1", lat: 37.30927735109936, lng: 126.87543411783554 },
+        { id: "2", name: "상록수역",   lat: 37.303611793223766, lng: 126.8668823, 
+          id: "3", name: "안산대2",   lat: 126.87662413801725, lng: 126.87662413801725
+        },
       ]);
     }
 
