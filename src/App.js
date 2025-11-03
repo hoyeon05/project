@@ -1,4 +1,4 @@
-// App.js — EveryBus React UI (정류장 → 상세 전환 + 실시간 버스 표시)
+// App.js — EveryBus React UI (정류장 → 상세 전환 + 실시간 버스 표시 + 유저 위치 마커)
 import React, { useEffect, useRef, useState, createContext, useContext, useMemo } from "react";
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from "react-router-dom";
 import "./App.css";
@@ -70,13 +70,13 @@ function useUserLocation(setUserLocation) {
     const start = async () => {
       // 1차: 저정밀(성공확률 ↑)
       try {
-        const pos = await getOnce({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
+        const pos = await getOnce({ enableHighAccuracy: false, timeout: 15000, maximumAge: 120000 });
         if (!canceled) setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
       } catch (e1) {
         logError(e1);
         // 2차: 고정밀
         try {
-          const pos2 = await getOnce({ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+          const pos2 = await getOnce({ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
           if (!canceled) setUserLocation({ lat: pos2.coords.latitude, lng: pos2.coords.longitude });
         } catch (e2) {
           logError(e2);
@@ -96,7 +96,7 @@ function useUserLocation(setUserLocation) {
           opts
         );
 
-      watchId = watchWith({ enableHighAccuracy: false, timeout: 15000, maximumAge: 30000 });
+      watchId = watchWith({ enableHighAccuracy: false, timeout: 20000, maximumAge: 30000 });
       const t = setTimeout(() => {
         if (watchId !== null) navigator.geolocation.clearWatch(watchId);
         watchId = watchWith({ enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 });
@@ -183,11 +183,12 @@ const Tabbar = () => {
 
 /********************** 홈 **********************/
 const HomeScreen = () => {
-  const { stops, setStops, vehicles, visibleVehicleIds, setVisibleVehicleIds, favIds, userLocation } = useApp();
+  const { stops, setStops, vehicles, visibleVehicleIds, favIds, userLocation } = useApp();
   const mapRef = useRef(null);
   const mapEl = useRef(null);
   const busOverlays = useRef([]);
   const stopMarkers = useRef([]);
+  const userMarkerRef = useRef(null);        // ✅ 유저 위치 마커
   const nav = useNavigate();
 
   // 지도 초기화
@@ -202,6 +203,34 @@ const HomeScreen = () => {
       }
     })();
   }, []);
+
+  // ✅ 유저 위치 마커 & 최초 센터링
+  useEffect(() => {
+    if (!userLocation || !window.kakao?.maps || !mapRef.current) return;
+    const kakao = window.kakao;
+    const pos = new kakao.maps.LatLng(userLocation.lat, userLocation.lng);
+    if (!userMarkerRef.current) {
+      userMarkerRef.current = new kakao.maps.Marker({
+        map: mapRef.current,
+        position: pos,
+        image: new kakao.maps.MarkerImage(
+          // 심플 아이콘(원하면 커스텀 이미지로 교체 가능)
+          "https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png",
+          new kakao.maps.Size(24, 35)
+        )
+      });
+      mapRef.current.setCenter(pos);
+    } else {
+      userMarkerRef.current.setPosition(pos);
+    }
+  }, [userLocation]);
+
+  // “내 위치” 버튼
+  const recenter = () => {
+    if (!userLocation || !window.kakao?.maps || !mapRef.current) return;
+    const pos = new window.kakao.maps.LatLng(userLocation.lat, userLocation.lng);
+    mapRef.current.panTo(pos);
+  };
 
   // 정류장 로드
   useEffect(() => {
@@ -246,7 +275,7 @@ const HomeScreen = () => {
   }, [vehicles, visibleVehicleIds]);
 
   return (
-    <Page title="EVERYBUS">
+    <Page title="EVERYBUS" right={<button className="header-right-btn" onClick={recenter}>내 위치</button>}>
       <div ref={mapEl} style={{ width: "100%", height: MAP_HEIGHT }} />
       {!userLocation && (
         <div className="hint-box" style={{ padding: 8, fontSize: 14 }}>
@@ -396,15 +425,18 @@ export default function App() {
         <Routes>
           <Route path="/" element={<HomeScreen />} />
           <Route path="/stop/:id" element={<StopDetail />} />
-          <Route path="*" element={
-            <div className="not-found-page">
-              <div className="not-found-content">
-                <div className="not-found-icon">🧭</div>
-                <div className="not-found-title">페이지를 찾을 수 없습니다</div>
-                <Link className="link" to="/">홈으로</Link>
+          <Route
+            path="*"
+            element={
+              <div className="not-found-page">
+                <div className="not-found-content">
+                  <div className="not-found-icon">🧭</div>
+                  <div className="not-found-title">페이지를 찾을 수 없습니다</div>
+                  <Link className="link" to="/">홈으로</Link>
+                </div>
               </div>
-            </div>
-          } />
+            }
+          />
         </Routes>
       </BrowserRouter>
     </AppContext.Provider>
