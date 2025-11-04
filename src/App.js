@@ -1,12 +1,6 @@
-// App.js — EveryBus React UI
-// - GPS 콘솔 1회만 출력
-// - 즐겨찾기 토스트/알림 비활성
-// - 헤더 버튼(/favorites,/alerts)
-// - 네가 준 CSS 클래스 구조(page-header-inner, tab-bar-inner, bus-item-content 등) 준수
-// - ✅ 운행중 로직: 기사 앱이 운행 시작한 버스만 정류장 리스트에 "운행중"으로 표시, 상세 진입 시 해당 버스 표시
-
+// App.js — EveryBus React UI (운행중 시간대 선택 → 라이브 화면 + ETA, GPS 콘솔 1회, 헤더 고정)
 import React, { useEffect, useRef, useState, createContext, useContext, useMemo } from "react";
-import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import "./App.css";
 
 /********************** 환경값 **********************/
@@ -14,7 +8,6 @@ const PROD_SERVER_URL = "https://project-1-ek9j.onrender.com";
 const LOCAL_SERVER_URL = "http://localhost:5000";
 const MAP_HEIGHT = 360;
 const VEHICLE_POLL_MS = 5000;
-const REAL_SHUTTLE_IMEI = "350599638756152";
 
 /********************** 알림/로그 제어 **********************/
 const NOTIFY_ENABLED = false;
@@ -108,7 +101,7 @@ function useUserLocation(setUserLocation) {
               console.warn("⚠️ 위치 폴백 좌표 사용");
               _gpsFallbackWarned = true;
             }
-            setUserLocation({ lat: 37.3308, lng: 126.8398 });
+            setUserLocation({ lat: 37.3308, lng: 126.8398 }); // 안산대 근처
           }
         }
       }
@@ -141,7 +134,7 @@ function useUserLocation(setUserLocation) {
 }
 
 /********************** 서버 데이터 **********************/
-// ⓐ 정류장
+// 정류장
 async function fetchStopsOnce() {
   const base = await getServerURL();
   try {
@@ -150,37 +143,27 @@ async function fetchStopsOnce() {
   } catch (e) {
     console.warn("[fetchStopsOnce] /stops 에러:", e);
   }
-  try {
-    const r2 = await fetch(`${base}/bus-info`);
-    if (r2.ok) return await r2.json();
-  } catch (e) {
-    console.warn("[fetchStopsOnce] /bus-info 에러:", e);
-  }
-  console.warn("⚠️ 서버에서 정류장 데이터를 받지 못함 — 기본값 사용");
   return [
     { id: "1", name: "안산대학교", lat: 37.3308, lng: 126.8398 },
     { id: "2", name: "상록수역", lat: 37.3175, lng: 126.866 },
   ];
 }
 
-// ⓑ 차량(위치) + (옵션) 운행중 목록
+// 차량 위치 + 운행중 메타 병합
 async function fetchVehiclesOnce() {
   const base = await getServerURL();
-  // 1) 위치
   let vehicles = [];
   try {
     const r = await fetch(`${base}/bus/location`);
-    if (r.ok) vehicles = await r.json();
+    if (r.ok) vehicles = await r.json(); // [{id,lat,lng,route...}]
   } catch (e) {
     console.warn("[fetchVehiclesOnce] /bus/location 에러:", e);
   }
 
-  // 2) 운행중 메타(/bus/active) 시도 (없으면 스킵)
   try {
     const r2 = await fetch(`${base}/bus/active`);
     if (r2.ok) {
-      const active = await r2.json(); // [{id, stopId, active:true, serviceWindow:{start,end}}]
-      // id 기준 merge
+      const active = await r2.json(); // [{id,stopId,time,active,serviceWindow...}]
       const idx = new Map(vehicles.map((v) => [String(v.id), v]));
       active.forEach((a) => {
         const key = String(a.id);
@@ -189,26 +172,12 @@ async function fetchVehiclesOnce() {
       });
       vehicles = [...idx.values()];
     }
-  } catch (e) {
-    // optional이므로 조용히 패스
-  }
-
-  // 3) 폴리필: 없으면 기본 규칙 부여(REAL_SHUTTLE_IMEI를 “운행중”으로 가정)
-  vehicles = vehicles.map((v) => {
-    const isKnown = v.active !== undefined || v.stopId !== undefined || v.serviceWindow !== undefined;
-    if (isKnown) return v;
-    return {
-      ...v,
-      active: v.id === REAL_SHUTTLE_IMEI, // 기사앱이 시작하면 백엔드에서 true로 내려주면 이 라인 무시됨
-      stopId: v.stopId || "1",            // 기본 정류장(안산대)로 예비 설정
-      serviceWindow: v.serviceWindow || null,
-    };
-  });
+  } catch {}
 
   return vehicles;
 }
 
-/********************** 유틸: 현재 운행중 판단 **********************/
+/********************** 유틸 **********************/
 function isActiveNow(v) {
   if (!v?.active) return false;
   if (!v?.serviceWindow) return true;
@@ -222,7 +191,22 @@ function isActiveNow(v) {
   }
 }
 
-/********************** (옵션) 알림 토스트 — 비활성이라 화면엔 안 뜸 **********************/
+// Haversine (meters)
+function haversineMeters(a, b) {
+  if (!a || !b) return NaN;
+  const R = 6371e3;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const sin = Math.sin;
+  const x = sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+  return R * c;
+}
+
+/********************** 토스트 (비활성) **********************/
 const Notice = ({ text, onClose }) => {
   useEffect(() => {
     const t = setTimeout(onClose, 2000);
@@ -311,13 +295,6 @@ const HomeScreen = () => {
     }
   }, [userLocation]);
 
-  // “내 위치” 버튼
-  const recenter = () => {
-    if (!userLocation || !window.kakao?.maps || !mapRef.current) return;
-    const pos = new window.kakao.maps.LatLng(userLocation.lat, userLocation.lng);
-    mapRef.current.panTo(pos);
-  };
-
   // 정류장 로드
   useEffect(() => {
     (async () => {
@@ -357,7 +334,7 @@ const HomeScreen = () => {
     });
   }, [vehicles, visibleVehicleIds]);
 
-  // ✅ 정류장별 "운행중" 집계
+  // 정류장별 "운행중" 집계
   const activeCountByStop = useMemo(() => {
     const m = new Map(); // stopId -> count
     vehicles.forEach((v) => {
@@ -377,20 +354,12 @@ const HomeScreen = () => {
         <div>
           <button className="header-link-btn" onClick={() => nav("/favorites")}>즐겨찾기</button>
           <button className="header-link-btn" onClick={() => nav("/alerts")}>알림</button>
-          <button className="header-link-btn" onClick={recenter}>내 위치</button>
         </div>
       }
     >
       <div className="map-container" style={{ height: MAP_HEIGHT }}>
         <div ref={mapEl} style={{ width: "100%", height: "100%" }} />
       </div>
-
-      {!userLocation && (
-        <div className="map-info-text">
-          <span>위치를 불러오는 중입니다…</span>
-          <span className="error-text">권한/실내 환경에 따라 정확도가 낮을 수 있어요</span>
-        </div>
-      )}
 
       {/* 정류장 리스트 */}
       <div className="bus-list">
@@ -408,14 +377,12 @@ const HomeScreen = () => {
               <div className="bus-item-content">
                 <div>
                   <div className="bus-item-name">{s.name}</div>
-                  {/* 운행중 배지 */}
                   {activeN > 0 && (
                     <div className="arrival-tags" style={{ marginTop: 6 }}>
                       <span className="arrival-tag">운행중 {activeN}대</span>
                     </div>
                   )}
                 </div>
-                {/* ⭐ 즐겨찾기: 클릭해도 페이지 이동 막기 */}
                 <button
                   className="favorite-btn"
                   aria-label="즐겨찾기 토글"
@@ -481,7 +448,7 @@ const FavoritesScreen = () => {
   );
 };
 
-/********************** 알림 **********************/
+/********************** 알림 (더미) **********************/
 const AlertsScreen = () => {
   const { alerts, clearAlerts } = useApp();
   return (
@@ -496,7 +463,6 @@ const AlertsScreen = () => {
           <li>알림을 다시 보이게 하려면 App.js 상단의 <b>NOTIFY_ENABLED</b>를 <code>true</code>로 바꾸세요.</li>
         </ul>
       </div>
-
       {alerts.length === 0 ? (
         <div className="list-empty-text">새 알림이 없어요.</div>
       ) : (
@@ -516,22 +482,12 @@ const AlertsScreen = () => {
 /********************** 정류장 상세 **********************/
 const StopDetail = () => {
   const { id } = useParams();
-  const { stops, vehicles, setVisibleVehicleIds } = useApp();
+  const { stops, vehicles } = useApp();
+  const nav = useNavigate();
 
   const stop = useMemo(() => stops.find((s) => String(s.id) === String(id)), [stops, id]);
   const mapRef = useRef(null);
   const mapEl = useRef(null);
-  const busOverlays = useRef([]);
-
-  // ✅ 상세 입장 시: 해당 정류장에서 "현재 운행중"인 버스만 표시
-  useEffect(() => {
-    const forThisStop = vehicles
-      .filter((v) => String(v.stopId) === String(id))
-      .filter((v) => isActiveNow(v))
-      .map((v) => v.id);
-    setVisibleVehicleIds(forThisStop);
-    return () => setVisibleVehicleIds([]);
-  }, [vehicles, id, setVisibleVehicleIds]);
 
   // 지도 초기화 + 정류장 마커
   useEffect(() => {
@@ -546,31 +502,18 @@ const StopDetail = () => {
     })();
   }, [stop]);
 
-  // 버스 오버레이 (상세 화면)
-  useEffect(() => {
-    const kakao = window.kakao;
-    if (!kakao?.maps || !mapRef.current) return;
-    busOverlays.current.forEach((o) => o.setMap(null));
-    busOverlays.current = [];
-
-    // 지도 위에 현재 운행중 버스만
-    const actives = vehicles.filter((v) => String(v.stopId) === String(id) && isActiveNow(v));
-    actives.forEach((v) => {
-      const pos = new kakao.maps.LatLng(v.lat, v.lng);
-      const overlay = new kakao.maps.CustomOverlay({
-        position: pos,
-        content:
-          `<div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-50%);">
-             <div style="font-size:20px;filter:drop-shadow(0 0 2px rgba(0,0,0,.5));">🚌</div>
-             <div style="font-size:10px;font-weight:bold;line-height:1;margin-top:2px;">${v.route || "운행중"}</div>
-           </div>`,
-        yAnchor: 0.5,
-        xAnchor: 0.5,
-      });
-      overlay.setMap(mapRef.current);
-      busOverlays.current.push(overlay);
+  // 이 정류장에서 현재 운행중인 시간대만 뽑기
+  const activeTimes = useMemo(() => {
+    const set = new Set();
+    vehicles.forEach(v => {
+      if (String(v.stopId) === String(id) && isActiveNow(v) && v.time) {
+        set.add(String(v.time).trim());
+      }
     });
+    return Array.from(set).sort();
   }, [vehicles, id]);
+
+  const activeCount = activeTimes.length;
 
   if (!stop) {
     return (
@@ -580,22 +523,130 @@ const StopDetail = () => {
     );
   }
 
-  // 운행중 버스 수
-  const activeForStop = vehicles.filter((v) => String(v.stopId) === String(id) && isActiveNow(v)).length;
-
   return (
     <Page
       title={stop.name}
-      right={<span className="info-text">{activeForStop > 0 ? `운행중 ${activeForStop}대` : "현재 운행 없음"}</span>}
+      right={<span className="info-text">{activeCount > 0 ? `운행중 ${activeCount}대` : "현재 운행 없음"}</span>}
     >
       <div className="map-container" style={{ height: MAP_HEIGHT }}>
         <div ref={mapEl} style={{ width: "100%", height: "100%" }} />
       </div>
 
       <div className="card">
-        <div className="card-subtitle">안내</div>
-        <div className="info-text">
-          기사 앱에서 운행을 시작하면 해당 정류장에만 버스가 “운행중”으로 표시되고, 이 화면에서 아이콘으로 보여줍니다.
+        <div className="card-subtitle">운행중인 시간대</div>
+        {activeTimes.length === 0 ? (
+          <div className="info-text">현재 이 정류장에는 운행 중인 시간대가 없습니다.</div>
+        ) : (
+          <div className="bus-list">
+            {activeTimes.map((t) => (
+              <button
+                key={t}
+                className="bus-item"
+                onClick={() => nav(`/stop/${id}/live/${encodeURIComponent(t)}`)}
+                style={{ textAlign: "left" }}
+              >
+                <div className="bus-item-content">
+                  <div className="bus-item-name">{t}</div>
+                  <div className="arrival-tags">
+                    <span className="arrival-tag">선택</span>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </Page>
+  );
+};
+
+/********************** 라이브 화면 (현재 버스 위치 + ETA) **********************/
+const TimeLiveScreen = () => {
+  const { id, time } = useParams(); // stopId, HH:MM
+  const { stops, vehicles } = useApp();
+  const [search] = useSearchParams(); // speedKmh(optional)
+  const speedKmh = Number(search.get("speedKmh")) > 0 ? Number(search.get("speedKmh")) : 18; // 기본 18km/h
+  const stop = useMemo(() => stops.find((s) => String(s.id) === String(id)), [stops, id]);
+
+  const mapRef = useRef(null);
+  const mapEl = useRef(null);
+  const overlays = useRef([]);
+
+  // 이 시간대에 해당하는 운행중 차량(여러대 가능)
+  const actives = useMemo(() => {
+    const t = String(time || "").trim();
+    return vehicles.filter(v => String(v.stopId) === String(id) && isActiveNow(v) && String(v.time || "").trim() === t);
+  }, [vehicles, id, time]);
+
+  // ETA 계산
+  const etaText = useMemo(() => {
+    if (!stop || actives.length === 0) return "정보 없음";
+    const withDist = actives
+      .filter(v => Number.isFinite(v.lat) && Number.isFinite(v.lng))
+      .map(v => ({ v, d: haversineMeters({ lat: v.lat, lng: v.lng }, { lat: stop.lat, lng: stop.lng }) }));
+    if (withDist.length === 0) return "정보 없음";
+    const nearest = withDist.sort((a, b) => a.d - b.d)[0];
+    const mps = speedKmh * 1000 / 3600;
+    const mins = Math.max(1, Math.round((nearest.d / mps) / 60));
+    return `${mins}분 후 도착 예정`;
+  }, [actives, stop, speedKmh]);
+
+  // 지도 초기화 + 마커/오버레이
+  useEffect(() => {
+    (async () => {
+      await loadKakaoMaps();
+      if (!stop) return;
+      const kakao = window.kakao;
+      const center = actives.length > 0 && Number.isFinite(actives[0].lat) && Number.isFinite(actives[0].lng)
+        ? new kakao.maps.LatLng(actives[0].lat, actives[0].lng)
+        : new kakao.maps.LatLng(stop.lat, stop.lng);
+
+      const map = new kakao.maps.Map(mapEl.current, { center, level: 4 });
+      mapRef.current = map;
+
+      // 정류장 마커
+      new kakao.maps.Marker({ position: new kakao.maps.LatLng(stop.lat, stop.lng), map });
+
+      // 버스 오버레이
+      overlays.current.forEach(o => o.setMap(null));
+      overlays.current = [];
+      actives.forEach((v) => {
+        if (!Number.isFinite(v.lat) || !Number.isFinite(v.lng)) return;
+        const overlay = new kakao.maps.CustomOverlay({
+          position: new kakao.maps.LatLng(v.lat, v.lng),
+          content: `<div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-50%);">
+              <div style="font-size:22px;filter:drop-shadow(0 0 2px rgba(0,0,0,.5));">🚌</div>
+              <div style="font-size:10px;font-weight:bold;line-height:1;margin-top:2px;">${v.route || "셔틀"}</div>
+            </div>`,
+          yAnchor: 0.5, xAnchor: 0.5,
+        });
+        overlay.setMap(map);
+        overlays.current.push(overlay);
+      });
+
+      setTimeout(() => map && map.relayout(), 0);
+    })();
+  }, [actives, stop]);
+
+  if (!stop) {
+    return (
+      <Page title="라이브">
+        <div className="list-empty-text">정류장을 찾을 수 없습니다.</div>
+      </Page>
+    );
+  }
+
+  return (
+    <Page title={`${stop.name} • ${time}`}>
+      <div className="map-container" style={{ height: MAP_HEIGHT }}>
+        <div ref={mapEl} style={{ width: "100%", height: "100%" }} />
+      </div>
+
+      <div className="card">
+        <div className="card-subtitle">예상 도착</div>
+        <div style={{ fontWeight: 700, fontSize: "1rem" }}>{etaText}</div>
+        <div className="info-text" style={{ marginTop: 6 }}>
+          (기본 속도 {speedKmh}km/h 기준 계산 • URL에 <code>?speedKmh=20</code> 처럼 전달하면 변경 가능)
         </div>
       </div>
     </Page>
@@ -616,7 +667,6 @@ export default function App() {
   const [visibleVehicleIds, setVisibleVehicleIds] = useState([]);
   const [userLocation, setUserLocation] = useState(null);
 
-  // 알림(리스트 + 토스트) — 기본 false라 생성 안됨
   const [alerts, setAlerts] = useState([]);
   const [toasts, setToasts] = useState([]);
   const addNotice = (message) => {
@@ -628,7 +678,6 @@ export default function App() {
   const closeToast = (id) => setToasts((prev) => prev.filter((t) => t.id !== id));
   const clearAlerts = () => setAlerts([]);
 
-  // 즐겨찾기 토글
   const toggleFav = (id) => {
     setFavIds((prev) => {
       const next = new Set(prev);
@@ -642,10 +691,8 @@ export default function App() {
     });
   };
 
-  // 위치 추적
   useUserLocation(setUserLocation);
 
-  // 실시간 차량 폴링 (전역)
   useEffect(() => {
     let alive = true;
     const run = async () => {
@@ -683,6 +730,7 @@ export default function App() {
           <Route path="/favorites" element={<FavoritesScreen />} />
           <Route path="/alerts" element={<AlertsScreen />} />
           <Route path="/stop/:id" element={<StopDetail />} />
+          <Route path="/stop/:id/live/:time" element={<TimeLiveScreen />} />
           <Route
             path="*"
             element={
