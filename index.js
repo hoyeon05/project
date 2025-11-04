@@ -1,5 +1,5 @@
 // server.js
-// EveryBus 백엔드 — MongoDB Atlas(busdb) + CORS + 시간표/차량 API (+ 운행 상태 API)
+// EveryBus 백엔드 — MongoDB Atlas(busdb) + CORS + 시간표/차량 API + 운행중 메타(/bus/active)
 
 const express = require("express");
 const cors = require("cors");
@@ -62,27 +62,24 @@ const TimebusSchema = new mongoose.Schema(
 );
 const Timebus = mongoose.model("Timebus", TimebusSchema);
 
-/* === [NEW] 운행 상태 === */
-/* 기사앱이 운행 시작/종료를 전송하면 저장되는 컬렉션 */
-const ActiveSchema = new mongoose.Schema(
+/* === 추가: ActiveBus(운행중 메타) === */
+const ActiveBusSchema = new mongoose.Schema(
   {
-    id: { type: String, required: true, unique: true }, // 차량/디바이스 ID
-    active: { type: Boolean, default: false },
-    stopId: { type: String },       // 표시할 정류장 ID
-    driver: { type: String },
-    time: { type: String },         // "HH:MM"
-    route: { type: String },        // 옵션
+    id: { type: String, required: true, unique: true }, // 차량/디바이스 ID (/bus/location과 동일 키)
+    stopId: { type: String, required: true },           // 사용자앱 /stops 의 id
+    time: { type: String, required: true },             // "HH:MM"
+    driver: { type: String, default: null },
+    route:  { type: String, default: null },            // "셔틀" 등 라벨(표시용)
+    active: { type: Boolean, default: true },
     serviceWindow: {
-      start: { type: Date },
-      end: { type: Date },
+      start: { type: Date, default: null },
+      end:   { type: Date, default: null },
     },
     updatedAt: { type: Date, default: Date.now },
-    endedAt: { type: Date, default: null },
   },
-  { collection: "bus_active", timestamps: false }
+  { collection: "ActiveBus", timestamps: false }
 );
-ActiveSchema.index({ id: 1 }, { unique: true });
-const Active = mongoose.model("Active", ActiveSchema);
+const ActiveBus = mongoose.model("ActiveBus", ActiveBusSchema);
 
 /* ---------------------- 기본 ---------------------- */
 app.get("/", (_req, res) => res.type("text/plain").send("EVERYBUS API OK"));
@@ -105,7 +102,7 @@ app.get("/stops", async (_req, res) => {
       return res.json([
         { id: "1", name: "안산대1", lat: 37.30927735109936, lng: 126.87543411783554 },
         { id: "2", name: "상록수역", lat: 37.303611793223766, lng: 126.8668823 },
-        { id: "3", name: "안산대2", lat: 37.30758465221897, lng: 126.87662413801725 },
+        { id: "3", name: "안산대2", lat: 37.30758465221897, lng: 126.87662413801725 }
       ]);
     }
     res.json(out);
@@ -137,10 +134,8 @@ app.post("/bus/location/:imei", async (req, res) => {
   try {
     const result = await Vehicle.findOneAndUpdate(
       { id: imei },
-      {
-        $set: { lat, lng, updatedAt: Date.now(), ...(Number.isFinite(heading) ? { heading } : {}) },
-        $setOnInsert: { id: imei, route: "미정" },
-      },
+      { $set: { lat, lng, updatedAt: Date.now(), ...(Number.isFinite(heading) ? { heading } : {}) },
+        $setOnInsert: { id: imei, route: "미정" } },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
     console.log(`[GPS UPDATE] ${result.id} → ${lat}, ${lng}`);
@@ -152,6 +147,7 @@ app.post("/bus/location/:imei", async (req, res) => {
 });
 
 /* ---------------------- (프론트 계약) /vehicles ---------------------- */
+// 프론트는 [{ id, label }] 을 기대함.
 app.get("/vehicles", async (_req, res) => {
   try {
     const docs = await Timebus.find({}).select("routeId direction -_id").lean();
@@ -184,6 +180,7 @@ app.get("/timebus", async (req, res) => {
     if (destination) q.destination = destination;
 
     const rows = await Timebus.find(Object.keys(q).length ? q : {}).lean();
+
     const normalized = rows.map((d) => ({
       routeId: d.routeId,
       direction: d.direction,
@@ -194,7 +191,9 @@ app.get("/timebus", async (req, res) => {
       updatedAt: d.updatedAt || null,
     }));
 
-    if (normalized.length === 0) return res.status(404).json([]);
+    if (normalized.length === 0) {
+      return res.status(404).json([]);
+    }
     res.json(normalized);
   } catch (e) {
     console.error("❌ /timebus:", e);
@@ -202,116 +201,97 @@ app.get("/timebus", async (req, res) => {
   }
 });
 
-/* ====================== [NEW] 운행 상태 API ====================== */
-/** GET /bus/active
- *  승객앱이 읽어가는 엔드포인트. active=true 인 것만 반환.
- *  프론트는 id/stopId/active/serviceWindow/route/time/driver 를 사용.
- */
+/* ---------------------- /bus/active (운행중 메타) ---------------------- */
+// 조회: 사용자앱이 병합용으로 사용
 app.get("/bus/active", async (_req, res) => {
   try {
-    const docs = await Active.find({ active: true }).lean();
-    const out = docs.map((d) => ({
-      id: d.id,
-      stopId: String(d.stopId || ""),
-      active: true,
-      serviceWindow: d.serviceWindow || null,
-      route: d.route || null,
-      time: d.time || null,
-      driver: d.driver || null,
-      updatedAt: d.updatedAt || null,
-    }));
-    res.json(out);
+    const rows = await ActiveBus.find({ active: true }).lean();
+    res.json(rows.map(r => ({
+      id: String(r.id),
+      stopId: String(r.stopId),
+      time: r.time,
+      driver: r.driver || null,
+      route:  r.route  || null,
+      active: !!r.active,
+      serviceWindow: r.serviceWindow || null,
+      updatedAt: r.updatedAt || null,
+    })));
   } catch (e) {
     console.error("❌ /bus/active GET:", e);
-    res.status(500).json({ error: "활성 운행 조회 실패" });
+    res.status(500).json({ error: "active 조회 실패" });
   }
 });
 
-/** PUT /bus/active
- *  업서트 표준. body.active 가 true면 시작/갱신, false면 종료.
- */
+// 업서트(기사앱 권장)
 app.put("/bus/active", async (req, res) => {
   try {
-    const { id, active, stopId, time, driver, route, serviceWindow, end } = req.body || {};
-    if (!id) return res.status(400).json({ error: "id는 필수입니다." });
+    const { id, stopId, time, driver, route, active, serviceWindow } = req.body || {};
+    if (!id || !stopId || !time) return res.status(400).json({ error: "id, stopId, time 필수" });
 
-    if (active === false) {
-      const doc = await Active.findOneAndUpdate(
-        { id },
-        { $set: { active: false, endedAt: end ? new Date(end) : new Date(), updatedAt: new Date() } },
-        { new: true, upsert: true, setDefaultsOnInsert: true }
-      );
-      return res.json({ ok: true, id: doc.id, active: false });
-    }
-
-    const doc = await Active.findOneAndUpdate(
-      { id },
+    const doc = await ActiveBus.findOneAndUpdate(
+      { id: String(id) },
       {
         $set: {
-          active: true,
-          stopId: stopId ?? null,
-          time: time ?? null,
+          stopId: String(stopId),
+          time: String(time),
           driver: driver ?? null,
           route: route ?? null,
-          serviceWindow: serviceWindow ?? null,
+          active: active !== false,
+          serviceWindow: serviceWindow || null,
           updatedAt: new Date(),
-          endedAt: null,
         },
       },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      { new: true, upsert: true }
     );
-    res.json({ ok: true, id: doc.id, active: true });
+    res.json({ ok: true, id: doc.id });
   } catch (e) {
     console.error("❌ /bus/active PUT:", e);
-    res.status(500).json({ error: "운행 상태 저장 실패" });
+    res.status(500).json({ error: "active 업서트 실패" });
   }
 });
 
-/** POST /bus/active/start  (폴백용) */
+// 호환용 시작
 app.post("/bus/active/start", async (req, res) => {
   try {
     const { id, stopId, time, driver, route, serviceWindow } = req.body || {};
-    if (!id) return res.status(400).json({ error: "id는 필수입니다." });
-    await Active.findOneAndUpdate(
-      { id },
+    if (!id || !stopId || !time) return res.status(400).json({ error: "id, stopId, time 필수" });
+    await ActiveBus.updateOne(
+      { id: String(id) },
       {
         $set: {
-          active: true,
-          stopId: stopId ?? null,
-          time: time ?? null,
+          stopId: String(stopId),
+          time: String(time),
           driver: driver ?? null,
           route: route ?? null,
-          serviceWindow: serviceWindow ?? null,
+          active: true,
+          serviceWindow: serviceWindow || null,
           updatedAt: new Date(),
-          endedAt: null,
         },
       },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      { upsert: true }
     );
     res.json({ ok: true });
   } catch (e) {
     console.error("❌ /bus/active/start:", e);
-    res.status(500).json({ error: "운행 시작 저장 실패" });
+    res.status(500).json({ error: "운행 시작 실패" });
   }
 });
 
-/** POST /bus/active/stop (폴백용) */
+// 호환용 종료
 app.post("/bus/active/stop", async (req, res) => {
   try {
-    const { id, end } = req.body || {};
-    if (!id) return res.status(400).json({ error: "id는 필수입니다." });
-    await Active.findOneAndUpdate(
-      { id },
-      { $set: { active: false, endedAt: end ? new Date(end) : new Date(), updatedAt: new Date() } },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+    const { id } = req.body || {};
+    if (!id) return res.status(400).json({ error: "id 필수" });
+    await ActiveBus.updateOne(
+      { id: String(id) },
+      { $set: { active: false, updatedAt: new Date() } }
     );
     res.json({ ok: true });
   } catch (e) {
     console.error("❌ /bus/active/stop:", e);
-    res.status(500).json({ error: "운행 종료 저장 실패" });
+    res.status(500).json({ error: "운행 종료 실패" });
   }
 });
-/* ==================== [NEW] /bus/active 끝 ==================== */
 
 /* ---------------------- 404 ---------------------- */
 app.use((_req, res) => res.status(404).json({ error: "Not Found" }));
