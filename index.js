@@ -25,6 +25,7 @@ const MONGO_URI =
   "mongodb+srv://master:ULUoh16HeSO0m0RJ@cluster0.rpczfaj.mongodb.net/busdb?appName=Cluster0";
 
 /* ---------------------- 스키마 ---------------------- */
+// Vehicle: GPS가 찍히는 실차(또는 단말) — id=IMEI, route=표시라벨(예: 1호차)
 const VehicleSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, unique: true },
@@ -38,6 +39,7 @@ const VehicleSchema = new mongoose.Schema(
 );
 const Vehicle = mongoose.model("Vehicle", VehicleSchema);
 
+// BusStop: 정류장
 const BusStopSchema = new mongoose.Schema(
   {
     정류장명: { type: String, required: true },
@@ -47,6 +49,7 @@ const BusStopSchema = new mongoose.Schema(
 );
 const BusStop = mongoose.model("BusStop", BusStopSchema);
 
+// Timebus: 시간표
 const TimebusSchema = new mongoose.Schema(
   {
     routeId: String,
@@ -62,14 +65,14 @@ const TimebusSchema = new mongoose.Schema(
 );
 const Timebus = mongoose.model("Timebus", TimebusSchema);
 
-/* === 추가: ActiveBus(운행중 메타) === */
+// ActiveBus: 운행중 메타(기사앱이 시작/종료 올림)
 const ActiveBusSchema = new mongoose.Schema(
   {
-    id: { type: String, required: true, unique: true }, // 차량/디바이스 ID (/bus/location과 동일 키)
+    id: { type: String, required: true, unique: true }, // 차량/디바이스 ID (IMEI)
     stopId: { type: String, required: true },           // 사용자앱 /stops 의 id
     time: { type: String, required: true },             // "HH:MM"
     driver: { type: String, default: null },
-    route:  { type: String, default: null },            // "셔틀" 등 라벨(표시용)
+    route:  { type: String, default: null },            // 표시 라벨(예: 1호차)
     active: { type: Boolean, default: true },
     serviceWindow: {
       start: { type: Date, default: null },
@@ -125,20 +128,24 @@ app.get("/bus/location", async (_req, res) => {
   }
 });
 
+// GPS 업데이트: route(표시라벨)도 같이 반영 가능
 app.post("/bus/location/:imei", async (req, res) => {
   const { imei } = req.params;
-  const { lat, lng, heading } = req.body || {};
+  const { lat, lng, heading, route } = req.body || {};
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return res.status(400).json({ error: "위도(lat), 경도(lng)는 숫자여야 합니다." });
   }
   try {
+    const $set = { lat, lng, updatedAt: Date.now() };
+    if (Number.isFinite(heading)) $set.heading = heading;
+    if (typeof route === "string" && route.trim()) $set.route = route.trim();
+
     const result = await Vehicle.findOneAndUpdate(
       { id: imei },
-      { $set: { lat, lng, updatedAt: Date.now(), ...(Number.isFinite(heading) ? { heading } : {}) },
-        $setOnInsert: { id: imei, route: "미정" } },
+      { $set, $setOnInsert: { id: imei, route: route?.trim() || "미정" } },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
-    console.log(`[GPS UPDATE] ${result.id} → ${lat}, ${lng}`);
+    console.log(`[GPS UPDATE] ${result.id} → ${lat}, ${lng} ${route ? `(route=${route})` : ""}`);
     res.json({ status: "OK", updatedId: imei });
   } catch (e) {
     console.error("❌ /bus/location POST:", e);
@@ -147,21 +154,25 @@ app.post("/bus/location/:imei", async (req, res) => {
 });
 
 /* ---------------------- (프론트 계약) /vehicles ---------------------- */
-// 프론트는 [{ id, label }] 을 기대함.
+/** 기사앱에서 보여줄 "차량 선택 목록"
+ *  - id: 실제 단말/차량 IMEI
+ *  - label: 표시 라벨(Vehicle.route), 없으면 id 그대로
+ */
 app.get("/vehicles", async (_req, res) => {
   try {
-    const docs = await Timebus.find({}).select("routeId direction -_id").lean();
-    const rawIds = docs.map((d) => d.routeId || d.direction).filter(Boolean);
-    const uniqIds = [...new Set(rawIds)];
+    const rows = await Vehicle.find({}, "id route -_id").lean();
+    const list = (rows || []).map(v => ({
+      id: String(v.id),
+      label: v.route ? String(v.route) : String(v.id),
+    }));
 
-    const labelMap = {
-      "ansan-line-1": "안산대1",
-      "ansan-line-2": "안산대2",
-      "상록수역→대학": "셔틀A",
-      "대학→상록수역": "셔틀B",
-    };
-
-    const list = uniqIds.map((id) => ({ id, label: labelMap[id] || id }));
+    if (list.length === 0) {
+      // 초기 더미
+      return res.json([
+        { id: "350599638756152", label: "1호차" },
+        { id: "350599638756153", label: "2호차" },
+      ]);
+    }
     res.json(list);
   } catch (e) {
     console.error("❌ /vehicles:", e);
@@ -202,7 +213,7 @@ app.get("/timebus", async (req, res) => {
 });
 
 /* ---------------------- /bus/active (운행중 메타) ---------------------- */
-// 조회: 사용자앱이 병합용으로 사용
+// 조회: 사용자앱 병합용
 app.get("/bus/active", async (_req, res) => {
   try {
     const rows = await ActiveBus.find({ active: true }).lean();
@@ -222,7 +233,7 @@ app.get("/bus/active", async (_req, res) => {
   }
 });
 
-// 업서트(기사앱 권장)
+// 업서트(권장) — Vehicle.route도 동기화
 app.put("/bus/active", async (req, res) => {
   try {
     const { id, stopId, time, driver, route, active, serviceWindow } = req.body || {};
@@ -235,7 +246,7 @@ app.put("/bus/active", async (req, res) => {
           stopId: String(stopId),
           time: String(time),
           driver: driver ?? null,
-          route: route ?? null,
+          route: route ?? null,  // 표시 라벨 보관
           active: active !== false,
           serviceWindow: serviceWindow || null,
           updatedAt: new Date(),
@@ -243,6 +254,16 @@ app.put("/bus/active", async (req, res) => {
       },
       { new: true, upsert: true }
     );
+
+    // Vehicle에도 라벨 동기화
+    if (route && String(route).trim()) {
+      await Vehicle.updateOne(
+        { id: String(id) },
+        { $set: { route: String(route).trim() } },
+        { upsert: true }
+      );
+    }
+
     res.json({ ok: true, id: doc.id });
   } catch (e) {
     console.error("❌ /bus/active PUT:", e);
@@ -250,11 +271,12 @@ app.put("/bus/active", async (req, res) => {
   }
 });
 
-// 호환용 시작
+// 호환용 시작 — Vehicle.route도 동기화
 app.post("/bus/active/start", async (req, res) => {
   try {
     const { id, stopId, time, driver, route, serviceWindow } = req.body || {};
     if (!id || !stopId || !time) return res.status(400).json({ error: "id, stopId, time 필수" });
+
     await ActiveBus.updateOne(
       { id: String(id) },
       {
@@ -270,6 +292,16 @@ app.post("/bus/active/start", async (req, res) => {
       },
       { upsert: true }
     );
+
+    // Vehicle에도 라벨 동기화
+    if (route && String(route).trim()) {
+      await Vehicle.updateOne(
+        { id: String(id) },
+        { $set: { route: String(route).trim() } },
+        { upsert: true }
+      );
+    }
+
     res.json({ ok: true });
   } catch (e) {
     console.error("❌ /bus/active/start:", e);
