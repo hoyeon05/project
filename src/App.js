@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import "./App.css";
 
-// 백엔드 자동 선택(프론트의 다른 파일에도 동일 규칙 쓰고 있으니 유지)
+// 백엔드 자동 선택(프론트의 다른 파일에도 동일 규칙)
 const PROD_SERVER_URL = "https://project-1-ek9j.onrender.com";
 const LOCAL_SERVER_URL = "http://localhost:5000";
 
@@ -18,12 +18,15 @@ async function getBase() {
   return cachedBase;
 }
 
+// 서비스 윈도우 길이(분) — 필요시 조정
+const SERVICE_WINDOW_MINUTES = 120;
+
 function BusStop() {
   // 선택 상태
   const [selectedBus, setSelectedBus] = useState(null);       // Vehicle.id
   const [selectedDriver, setSelectedDriver] = useState(null);  // 간단 배열
   const [selectedTime, setSelectedTime] = useState(null);      // "HH:MM"
-  const [selectedStop, setSelectedStop] = useState(null);      // 정류장명(안산대1/안산대2/상록수역)
+  const [selectedStopName, setSelectedStopName] = useState(null); // 정류장명
 
   const [isDriving, setIsDriving] = useState(false);
   const [passengerCount, setPassengerCount] = useState(0);
@@ -31,11 +34,22 @@ function BusStop() {
 
   // DB에서 읽어오는 옵션
   const [busOptions, setBusOptions] = useState([]);            // [{id, route, label}]
+  const [stopsData, setStopsData] = useState([]);              // [{id,name,lat,lng}]
   const [stopOptions, setStopOptions] = useState([]);          // ["안산대1","안산대2","상록수역"]
   const [timeOptions, setTimeOptions] = useState([]);          // ["08:40","08:45",...]
 
   // 임시: 기사 이름(컬렉션이 없으므로 하드코딩)
   const driverOptions = ["김기사", "박기사", "이기사"];
+
+  // 정류장 이름 → id 매핑
+  const stopIdByName = useMemo(() => {
+    const m = new Map();
+    stopsData.forEach(s => {
+      // 동일 이름의 정류장이 여러 개면 첫번째만 사용(필요시 개선)
+      if (!m.has(s.name)) m.set(s.name, String(s.id ?? s._id ?? s.name));
+    });
+    return m;
+  }, [stopsData]);
 
   // ====== DB에서 옵션 로드 ======
   useEffect(() => {
@@ -47,7 +61,7 @@ function BusStop() {
         const r = await fetch(`${base}/vehicles`);
         if (r.ok) {
           const data = await r.json();          // [{id, route, label}]
-          setBusOptions(data);
+          setBusOptions(Array.isArray(data) ? data : []);
         }
       } catch {}
 
@@ -56,12 +70,11 @@ function BusStop() {
         const r = await fetch(`${base}/stops`);
         if (r.ok) {
           const stops = await r.json();         // [{id,name,lat,lng}, ...]
+          setStopsData(Array.isArray(stops) ? stops : []);
           // 화면에는 이름만 쓰면 됨
-          const names = Array.from(new Set(stops.map(s => s.name))).sort();
+          const names = Array.from(new Set((stops || []).map(s => s.name))).sort();
           setStopOptions(names);
-
-          // 기본 선택값(있으면 자동 셋)
-          if (!selectedStop && names.length) setSelectedStop(names[0]);
+          if (!selectedStopName && names.length) setSelectedStopName(names[0]);
         }
       } catch {}
     })();
@@ -71,22 +84,18 @@ function BusStop() {
   useEffect(() => {
     (async () => {
       const base = await getBase();
-      // 선택한 정류장이 "상록수역"이면 → "상록수역→대학"
-      // 그 외(안산대1/안산대2)는 → "대학→상록수역"
-      if (!selectedStop) return;
+      if (!selectedStopName) return;
 
-      const isStation = selectedStop.includes("상록수");
+      const isStation = selectedStopName.includes("상록수");
       const direction = isStation ? "상록수역→대학" : "대학→상록수역";
 
       try {
         const r = await fetch(`${base}/timebus?direction=${encodeURIComponent(direction)}`);
         if (r.ok) {
           const rows = await r.json();  // 보통 1문서, 혹은 다수 문서
-          const times = (rows?.[0]?.times || []).slice(); // 배열 복사
-          // 보기 좋게 정렬 + 중복 제거
+          const times = (rows?.[0]?.times || []).slice();
           const uniq = Array.from(new Set(times)).sort();
           setTimeOptions(uniq);
-          // 기본 선택 초기화
           if (!selectedTime && uniq.length) setSelectedTime(uniq[0]);
         } else {
           setTimeOptions([]);
@@ -95,7 +104,7 @@ function BusStop() {
         setTimeOptions([]);
       }
     })();
-  }, [selectedStop, setTimeOptions]);
+  }, [selectedStopName]);
 
   // ========== 탑승자 수 시뮬레이션 ==========
   useEffect(() => {
@@ -106,19 +115,88 @@ function BusStop() {
     return () => id && clearInterval(id);
   }, [isDriving]);
 
+  // ====== 서버 전송 유틸(업서트 PUT → 폴백 POST /start|/stop) ======
+  async function sendActiveToServer(payload, mode /* "start"|"stop" */) {
+    const base = await getBase();
+
+    // 1) 표준 업서트 시도
+    try {
+      const res = await fetch(`${base}/bus/active`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) return true;
+    } catch {}
+
+    // 2) 폴백: start/stop 전용 엔드포인트
+    const endpoint = mode === "start" ? `${base}/bus/active/start` : `${base}/bus/active/stop`;
+    try {
+      const res2 = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res2.ok) return true;
+    } catch {}
+
+    return false;
+  }
+
   // ========== 운행 시작/종료 ==========
-  const handleToggleDriving = () => {
+  const handleToggleDriving = async () => {
     if (isDriving) {
-      if (window.confirm("운행을 종료하시겠습니까?")) {
-        setIsDriving(false);
-        setPassengerCount(0);
+      if (!window.confirm("운행을 종료하시겠습니까?")) return;
+
+      const ok = await sendActiveToServer(
+        {
+          id: selectedBus,
+          active: false,
+          // 원한다면 end 타임스탬프도 보냄
+          end: new Date().toISOString(),
+        },
+        "stop"
+      );
+
+      if (!ok) {
+        alert("서버로 운행 종료 전송 실패. 네트워크나 서버를 확인해주세요.");
+        return;
       }
+
+      setIsDriving(false);
+      setPassengerCount(0);
+      setShowQR(false);
       return;
     }
-    if (!selectedBus || !selectedDriver || !selectedTime || !selectedStop) {
+
+    // 시작
+    if (!selectedBus || !selectedDriver || !selectedTime || !selectedStopName) {
       alert("버스/기사/정류장/시간을 모두 선택해주세요.");
       return;
     }
+
+    const now = Date.now();
+    const startISO = new Date(now).toISOString();
+    const endISO = new Date(now + SERVICE_WINDOW_MINUTES * 60 * 1000).toISOString();
+    const stopId = stopIdByName.get(selectedStopName) || String(selectedStopName);
+
+    const ok = await sendActiveToServer(
+      {
+        id: selectedBus,            // 차량/디바이스 고유 ID
+        stopId,                     // 정류장 ID
+        time: selectedTime,         // 선택한 시간대(HH:MM)
+        driver: selectedDriver,     // 기사명
+        active: true,               // 운행 시작
+        serviceWindow: { start: startISO, end: endISO },
+      },
+      "start"
+    );
+
+    if (!ok) {
+      alert("서버로 운행 시작 전송 실패. 네트워크나 서버를 확인해주세요.");
+      return;
+    }
+
     setIsDriving(true);
   };
 
@@ -172,7 +250,7 @@ function BusStop() {
                   <span className="info-value">{selectedTime}</span>
                 </div>
                 <div className="info-item"><span className="info-label">🚏 정류장</span>
-                  <span className="info-value">{selectedStop}</span>
+                  <span className="info-value">{selectedStopName}</span>
                 </div>
               </div>
             </div>
@@ -211,7 +289,7 @@ function BusStop() {
                       checked={selectedBus === b.id}
                       onChange={() => setSelectedBus(b.id)}
                     />
-                    <div className="item-name">{b.label}</div>
+                    <div className="item-name">{b.label ?? b.id}</div>
                   </label>
                 ))}
                 {busOptions.length === 0 && <div className="info-text">등록된 버스가 없습니다.</div>}
@@ -242,13 +320,13 @@ function BusStop() {
               <div className="card-subtitle">3. 정류장 선택</div>
               <div className="selectable-list">
                 {stopOptions.map((nm) => (
-                  <label key={nm} className={`selectable-item ${selectedStop === nm ? "selected" : ""}`}>
+                  <label key={nm} className={`selectable-item ${selectedStopName === nm ? "selected" : ""}`}>
                     <input
                       type="radio"
                       name="stop"
                       value={nm}
-                      checked={selectedStop === nm}
-                      onChange={() => setSelectedStop(nm)}
+                      checked={selectedStopName === nm}
+                      onChange={() => setSelectedStopName(nm)}
                     />
                     <div className="item-name">{nm}</div>
                   </label>
@@ -281,7 +359,7 @@ function BusStop() {
             <button
               className="button-primary start"
               onClick={handleToggleDriving}
-              disabled={!selectedBus || !selectedDriver || !selectedStop || !selectedTime}
+              disabled={!selectedBus || !selectedDriver || !selectedStopName || !selectedTime}
             >
               운행 시작
             </button>
