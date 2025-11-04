@@ -1,9 +1,15 @@
+// App.js — EveryBus Driver (기사님 앱 완성본)
+// - 목록엔 "1호차" 같은 라벨 표시, 서버엔 IMEI(id) 전송
+// - /bus/active 업서트(put) + start/stop 폴백(post) 지원
+// - 마지막 선택값 localStorage 저장/복원
+
 import React, { useState, useEffect, useMemo } from "react";
 import "./App.css";
 
-// 백엔드 자동 선택(프론트의 다른 파일에도 동일 규칙)
+/* ================== 환경 ================== */
 const PROD_SERVER_URL = "https://project-1-ek9j.onrender.com";
 const LOCAL_SERVER_URL = "http://localhost:5000";
+const SERVICE_WINDOW_MINUTES = 120;
 
 let cachedBase = null;
 async function getBase() {
@@ -18,40 +24,54 @@ async function getBase() {
   return cachedBase;
 }
 
-// 서비스 윈도우 길이(분) — 필요시 조정
-const SERVICE_WINDOW_MINUTES = 120;
+/* ================== 유틸: localStorage ================== */
+const LS_KEY = "everybus:driver:selection";
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; }
+}
+function saveSelection(sel) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(sel)); } catch {}
+}
 
-function BusStop() {
-  // 선택 상태
-  const [selectedBus, setSelectedBus] = useState(null);       // Vehicle.id
-  const [selectedDriver, setSelectedDriver] = useState(null);  // 간단 배열
-  const [selectedTime, setSelectedTime] = useState(null);      // "HH:MM"
-  const [selectedStopName, setSelectedStopName] = useState(null); // 정류장명
+/* ================== 메인 컴포넌트 ================== */
+export default function BusStop() {
+  // 선택 상태 (id=IMEI, label=표시명)
+  const saved = loadSaved();
+  const [selectedBusId, setSelectedBusId] = useState(saved.busId || null);
+  const [selectedBusLabel, setSelectedBusLabel] = useState(saved.busLabel || null);
+  const [selectedDriver, setSelectedDriver] = useState(saved.driver || null);
+  const [selectedTime, setSelectedTime] = useState(saved.time || null);      // "HH:MM"
+  const [selectedStopName, setSelectedStopName] = useState(saved.stopName || null);
 
   const [isDriving, setIsDriving] = useState(false);
   const [passengerCount, setPassengerCount] = useState(0);
   const [showQR, setShowQR] = useState(false);
+  const [submitting, setSubmitting] = useState(false); // 중복 클릭 방지
 
-  // DB에서 읽어오는 옵션
-  const [busOptions, setBusOptions] = useState([]);            // [{id, route, label}]
-  const [stopsData, setStopsData] = useState([]);              // [{id,name,lat,lng}]
-  const [stopOptions, setStopOptions] = useState([]);          // ["안산대1","안산대2","상록수역"]
-  const [timeOptions, setTimeOptions] = useState([]);          // ["08:40","08:45",...]
+  // DB 옵션
+  const [busOptions, setBusOptions] = useState([]);   // [{id, label}]
+  const [stopsData, setStopsData] = useState([]);     // [{id,name,lat,lng}]
+  const [stopOptions, setStopOptions] = useState([]); // ["안산대1", "상록수역", ...]
+  const [timeOptions, setTimeOptions] = useState([]); // ["08:40", ...]
 
-  // 임시: 기사 이름(컬렉션이 없으므로 하드코딩)
+  // 수동 입력 (선택)
+  const [imeiInput, setImeiInput] = useState("");
+  const [labelInput, setLabelInput] = useState("");
+
+  // 기사 이름(임시)
   const driverOptions = ["김기사", "박기사", "이기사"];
 
-  // 정류장 이름 → id 매핑
+  // 정류장 이름 -> id 매핑
   const stopIdByName = useMemo(() => {
     const m = new Map();
     stopsData.forEach(s => {
-      // 동일 이름의 정류장이 여러 개면 첫번째만 사용(필요시 개선)
+      // 동일 이름 여러 개면 첫 번째만 사용
       if (!m.has(s.name)) m.set(s.name, String(s.id ?? s._id ?? s.name));
     });
     return m;
   }, [stopsData]);
 
-  // ====== DB에서 옵션 로드 ======
+  // ====== 옵션 로딩 ======
   useEffect(() => {
     (async () => {
       const base = await getBase();
@@ -60,8 +80,20 @@ function BusStop() {
       try {
         const r = await fetch(`${base}/vehicles`);
         if (r.ok) {
-          const data = await r.json();          // [{id, route, label}]
-          setBusOptions(Array.isArray(data) ? data : []);
+          const data = await r.json(); // [{id,label}]
+          const dedup = new Map();
+          (Array.isArray(data) ? data : []).forEach(v => {
+            const id = String(v.id);
+            if (!dedup.has(id)) dedup.set(id, { id, label: v.label ? String(v.label) : id });
+          });
+          const safe = Array.from(dedup.values()).sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+          setBusOptions(safe);
+
+          // 저장된 선택이 유효하면 복구
+          if (saved.busId && safe.some(x => x.id === saved.busId)) {
+            setSelectedBusId(saved.busId);
+            setSelectedBusLabel(saved.busLabel || saved.busId);
+          }
         }
       } catch {}
 
@@ -69,15 +101,21 @@ function BusStop() {
       try {
         const r = await fetch(`${base}/stops`);
         if (r.ok) {
-          const stops = await r.json();         // [{id,name,lat,lng}, ...]
-          setStopsData(Array.isArray(stops) ? stops : []);
-          // 화면에는 이름만 쓰면 됨
-          const names = Array.from(new Set((stops || []).map(s => s.name))).sort();
+          const stops = await r.json();
+          const arr = Array.isArray(stops) ? stops : [];
+          setStopsData(arr);
+          const names = Array.from(new Set(arr.map(s => s.name))).sort();
           setStopOptions(names);
-          if (!selectedStopName && names.length) setSelectedStopName(names[0]);
+
+          if (!saved.stopName) {
+            if (!selectedStopName && names.length) setSelectedStopName(names[0]);
+          } else {
+            setSelectedStopName(saved.stopName);
+          }
         }
       } catch {}
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // 최초 1회
 
   // ====== 정류장/방향에 따라 시간표 로드 ======
@@ -92,11 +130,17 @@ function BusStop() {
       try {
         const r = await fetch(`${base}/timebus?direction=${encodeURIComponent(direction)}`);
         if (r.ok) {
-          const rows = await r.json();  // 보통 1문서, 혹은 다수 문서
-          const times = (rows?.[0]?.times || []).slice();
+          const rows = await r.json();  // 다수 문서 가능
+          const doc = (Array.isArray(rows) ? rows : []).find(x => Array.isArray(x?.times) && x.times.length) || null;
+          const times = doc ? doc.times.slice() : [];
           const uniq = Array.from(new Set(times)).sort();
           setTimeOptions(uniq);
-          if (!selectedTime && uniq.length) setSelectedTime(uniq[0]);
+
+          if (!saved.time) {
+            if (!selectedTime && uniq.length) setSelectedTime(uniq[0]);
+          } else {
+            setSelectedTime(saved.time);
+          }
         } else {
           setTimeOptions([]);
         }
@@ -104,6 +148,7 @@ function BusStop() {
         setTimeOptions([]);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStopName]);
 
   // ========== 탑승자 수 시뮬레이션 ==========
@@ -115,11 +160,22 @@ function BusStop() {
     return () => id && clearInterval(id);
   }, [isDriving]);
 
+  // 선택 변경될 때마다 저장
+  useEffect(() => {
+    saveSelection({
+      busId: selectedBusId || null,
+      busLabel: selectedBusLabel || null,
+      driver: selectedDriver || null,
+      time: selectedTime || null,
+      stopName: selectedStopName || null,
+    });
+  }, [selectedBusId, selectedBusLabel, selectedDriver, selectedTime, selectedStopName]);
+
   // ====== 서버 전송 유틸(업서트 PUT → 폴백 POST /start|/stop) ======
   async function sendActiveToServer(payload, mode /* "start"|"stop" */) {
     const base = await getBase();
 
-    // 1) 표준 업서트 시도
+    // 1) 표준 업서트
     try {
       const res = await fetch(`${base}/bus/active`, {
         method: "PUT",
@@ -129,7 +185,7 @@ function BusStop() {
       if (res.ok) return true;
     } catch {}
 
-    // 2) 폴백: start/stop 전용 엔드포인트
+    // 2) 폴백
     const endpoint = mode === "start" ? `${base}/bus/active/start` : `${base}/bus/active/stop`;
     try {
       const res2 = await fetch(endpoint, {
@@ -145,18 +201,18 @@ function BusStop() {
 
   // ========== 운행 시작/종료 ==========
   const handleToggleDriving = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+
     if (isDriving) {
-      if (!window.confirm("운행을 종료하시겠습니까?")) return;
+      if (!window.confirm("운행을 종료하시겠습니까?")) { setSubmitting(false); return; }
 
       const ok = await sendActiveToServer(
-        {
-          id: selectedBus,
-          active: false,
-          // 원한다면 end 타임스탬프도 보냄
-          end: new Date().toISOString(),
-        },
+        { id: selectedBusId, active: false, end: new Date().toISOString() },
         "stop"
       );
+
+      setSubmitting(false);
 
       if (!ok) {
         alert("서버로 운행 종료 전송 실패. 네트워크나 서버를 확인해주세요.");
@@ -169,9 +225,10 @@ function BusStop() {
       return;
     }
 
-    // 시작
-    if (!selectedBus || !selectedDriver || !selectedTime || !selectedStopName) {
-      alert("버스/기사/정류장/시간을 모두 선택해주세요.");
+    // 시작 유효성
+    if (!selectedBusId || !selectedDriver || !selectedTime || !selectedStopName) {
+      alert("버스(IMEI)/기사/정류장/시간을 모두 선택해주세요.");
+      setSubmitting(false);
       return;
     }
 
@@ -182,15 +239,18 @@ function BusStop() {
 
     const ok = await sendActiveToServer(
       {
-        id: selectedBus,            // 차량/디바이스 고유 ID
-        stopId,                     // 정류장 ID
-        time: selectedTime,         // 선택한 시간대(HH:MM)
-        driver: selectedDriver,     // 기사명
-        active: true,               // 운행 시작
+        id: String(selectedBusId),                // 서버엔 실제 ID(IMEI)
+        stopId: String(stopId),
+        time: String(selectedTime).trim(),
+        driver: selectedDriver,
+        route: selectedBusLabel || null,          // 사용자앱 지도 라벨
+        active: true,
         serviceWindow: { start: startISO, end: endISO },
       },
       "start"
     );
+
+    setSubmitting(false);
 
     if (!ok) {
       alert("서버로 운행 시작 전송 실패. 네트워크나 서버를 확인해주세요.");
@@ -218,7 +278,7 @@ function BusStop() {
             <div className="card-subtitle">승객 탑승용 QR 코드</div>
             <div className="qr-placeholder">
               <img
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=EVERYBUS_${selectedBus}_${selectedTime}`}
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=EVERYBUS_${selectedBusId}_${selectedTime}`}
                 alt="QR"
               />
               <span className="info-text" style={{ marginTop: 10 }}>
@@ -238,18 +298,24 @@ function BusStop() {
             <div className="card">
               <div className="card-subtitle">현재 운행 정보</div>
               <div className="driving-info-list">
-                <div className="info-item"><span className="info-label">🚌 버스</span>
-                  <span className="info-value">
-                    {busOptions.find(b => b.id === selectedBus)?.label || selectedBus}
-                  </span>
+                <div className="info-item">
+                  <span className="info-label">🚌 버스</span>
+                  <span className="info-value">{selectedBusLabel || selectedBusId}</span>
                 </div>
-                <div className="info-item"><span className="info-label">👨‍✈️ 기사</span>
+                <div className="info-text" style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+                  (ID: {selectedBusId})
+                </div>
+
+                <div className="info-item">
+                  <span className="info-label">👨‍✈️ 기사</span>
                   <span className="info-value">{selectedDriver}</span>
                 </div>
-                <div className="info-item"><span className="info-label">🕒 시간</span>
+                <div className="info-item">
+                  <span className="info-label">🕒 시간</span>
                   <span className="info-value">{selectedTime}</span>
                 </div>
-                <div className="info-item"><span className="info-label">🚏 정류장</span>
+                <div className="info-item">
+                  <span className="info-label">🚏 정류장</span>
                   <span className="info-value">{selectedStopName}</span>
                 </div>
               </div>
@@ -265,8 +331,8 @@ function BusStop() {
               </div>
             </div>
 
-            <button className="button-primary stop" onClick={handleToggleDriving}>
-              운행 종료
+            <button className="button-primary stop" onClick={handleToggleDriving} disabled={submitting}>
+              {submitting ? "종료 중..." : "운행 종료"}
             </button>
           </>
         ) : (
@@ -276,27 +342,62 @@ function BusStop() {
               <p className="status-display stopped">운행 대기</p>
             </div>
 
-            {/* 1) 버스 선택 */}
+            {/* 1) 버스 선택 (id=IMEI, label=표시명) */}
             <div className="card">
               <div className="card-subtitle">1. 버스 선택</div>
               <div className="selectable-list">
                 {busOptions.map((b) => (
-                  <label key={b.id} className={`selectable-item ${selectedBus === b.id ? "selected" : ""}`}>
+                  <label key={b.id} className={`selectable-item ${selectedBusId === b.id ? "selected" : ""}`}>
                     <input
                       type="radio"
                       name="bus"
                       value={b.id}
-                      checked={selectedBus === b.id}
-                      onChange={() => setSelectedBus(b.id)}
+                      checked={selectedBusId === b.id}
+                      onChange={() => {
+                        setSelectedBusId(b.id);
+                        setSelectedBusLabel(b.label ?? b.id);
+                      }}
                     />
                     <div className="item-name">{b.label ?? b.id}</div>
+                    <div className="info-text" style={{ fontSize: 12, opacity: 0.7 }}>({b.id})</div>
                   </label>
                 ))}
-                {busOptions.length === 0 && <div className="info-text">등록된 버스가 없습니다.</div>}
+                {busOptions.length === 0 && <div className="info-text">등록된 버스가 없습니다. 아래에서 직접 입력할 수 있습니다.</div>}
+              </div>
+
+              {/* 수동 입력 (선택) */}
+              <div className="card" style={{ marginTop: 12 }}>
+                <div className="card-subtitle">직접 입력(선택)</div>
+                <input
+                  type="text"
+                  className="text-input"
+                  placeholder="IMEI 예: 350599638756152"
+                  value={imeiInput}
+                  onChange={(e) => setImeiInput(e.target.value.trim())}
+                />
+                <input
+                  type="text"
+                  className="text-input"
+                  style={{ marginTop: 8 }}
+                  placeholder="표시명 예: 1호차 (선택)"
+                  value={labelInput}
+                  onChange={(e) => setLabelInput(e.target.value)}
+                />
+                <button
+                  className="button-primary start"
+                  style={{ marginTop: 8 }}
+                  onClick={() => {
+                    if (!imeiInput) return alert("IMEI를 입력하세요.");
+                    setSelectedBusId(imeiInput);
+                    setSelectedBusLabel(labelInput || imeiInput);
+                  }}
+                >
+                  이 IMEI 사용
+                </button>
               </div>
             </div>
 
-            {/* 2) 기사 선택 (임시 배열) */}
+            {/* 2) 기사 선택 */}
             <div className="card">
               <div className="card-subtitle">2. 기사님 이름</div>
               <div className="selectable-list">
@@ -315,7 +416,7 @@ function BusStop() {
               </div>
             </div>
 
-            {/* 3) 정류장 선택 (BusStop 컬렉션) */}
+            {/* 3) 정류장 선택 */}
             <div className="card">
               <div className="card-subtitle">3. 정류장 선택</div>
               <div className="selectable-list">
@@ -334,7 +435,7 @@ function BusStop() {
               </div>
             </div>
 
-            {/* 4) 시간대 선택 (timebus 컬렉션 → direction 기준) */}
+            {/* 4) 시간대 선택 */}
             <div className="card">
               <div className="card-subtitle">4. 시간대 선택</div>
               <div className="selectable-list">
@@ -359,9 +460,9 @@ function BusStop() {
             <button
               className="button-primary start"
               onClick={handleToggleDriving}
-              disabled={!selectedBus || !selectedDriver || !selectedStopName || !selectedTime}
+              disabled={!selectedBusId || !selectedDriver || !selectedStopName || !selectedTime || submitting}
             >
-              운행 시작
+              {submitting ? "시작 중..." : "운행 시작"}
             </button>
           </>
         )}
@@ -369,5 +470,3 @@ function BusStop() {
     </div>
   );
 }
-
-export default BusStop;
