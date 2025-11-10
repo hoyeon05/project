@@ -725,26 +725,31 @@ export default function App() {
       </div>
 
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<HomeScreen />} />
-          <Route path="/favorites" element={<FavoritesScreen />} />
-          <Route path="/alerts" element={<AlertsScreen />} />
-          <Route path="/stop/:id" element={<StopDetail />} />
-          <Route path="/stop/:id/live/:time" element={<TimeLiveScreen />} />
-          <Route
-            path="*"
-            element={
-              <div className="not-found-page">
-                <div className="not-found-content">
-                  <div className="not-found-icon">🧭</div>
-                  <div className="not-found-title">페이지를 찾을 수 없습니다</div>
-                  <Link className="link" to="/">홈으로</Link>
-                </div>
-              </div>
-            }
-          />
-        </Routes>
-      </BrowserRouter>
+  <Routes>
+    <Route path="/" element={<HomeScreen />} />
+    <Route path="/favorites" element={<FavoritesScreen />} />
+    <Route path="/alerts" element={<AlertsScreen />} />
+    <Route path="/stop/:id" element={<StopDetail />} />
+    <Route path="/stop/:id/live/:time" element={<TimeLiveScreen />} />
+
+    
+    <Route path="/route-editor" element={<RouteEditor />} />
+
+    <Route
+      path="*"
+      element={
+        <div className="not-found-page">
+          <div className="not-found-content">
+            <div className="not-found-icon">🚌</div>
+            <div className="not-found-title">페이지를 찾을 수 없습니다</div>
+            <Link className="not-found-link" to="/">홈으로</Link>
+          </div>
+        </div>
+      }
+    />
+  </Routes>
+</BrowserRouter>
+
     </AppContext.Provider>
   );
 }
