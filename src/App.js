@@ -1,13 +1,10 @@
-// DriverApp.js — EveryBus 기사님용 (Render 서버 연동 완성본)
-// 서버: https://project-1-ek9j.onrender.com
-// 기능: 운행 시작/종료, 실시간 위치 전송, QR코드 발급
-
+// DriverApp.js — EveryBus 기사님용 (수정본)
 import React, { useState, useEffect, useMemo } from "react";
 import "./App.css";
 
 const PROD_SERVER_URL = "https://project-1-ek9j.onrender.com";
 const LOCAL_SERVER_URL = "http://localhost:5000";
-const GPS_POLL_MS = 8000; // 위치 갱신 주기 (8초)
+const GPS_POLL_MS = 8000;
 const SERVICE_WINDOW_MINUTES = 120;
 
 let cachedBase = null;
@@ -27,36 +24,6 @@ async function getBase() {
   return cachedBase;
 }
 
-// /bus/active/start
-async function startActiveOnServer(payload) {
-  const base = await getBase();
-  try {
-    const res = await fetch(`${base}/bus/active/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-// /bus/active/stop
-async function stopActiveOnServer(id) {
-  const base = await getBase();
-  try {
-    const res = await fetch(`${base}/bus/active/stop`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: String(id) }),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 export default function DriverApp() {
   const [busId, setBusId] = useState("");
   const [driver, setDriver] = useState("");
@@ -64,30 +31,33 @@ export default function DriverApp() {
   const [stopId, setStopId] = useState("");
   const [time, setTime] = useState("");
   const [isDriving, setIsDriving] = useState(false);
+  const [passengers, setPassengers] = useState(0);
   const [showQR, setShowQR] = useState(false);
 
   const [busOptions, setBusOptions] = useState([]);
   const [stops, setStops] = useState([]);
 
+  // 현재 활성 세션 (종료/새로고침용)
+  const [activeSession, setActiveSession] = useState(null); // { id, stopId, time }
+
   const driverOptions = ["김기사", "박기사", "이기사", "최기사"];
 
-  // 차량 / 정류장 불러오기
+  // 차량/정류장 로드
   useEffect(() => {
     (async () => {
       const base = await getBase();
       try {
-        // 차량 목록은 /vehicles 사용 (id, label)
         const r = await fetch(`${base}/vehicles`);
         if (r.ok) {
           const arr = await r.json();
-          const list = (Array.isArray(arr) ? arr : []).map((v) => ({
-            id: String(v.id),
-            label: v.label || String(v.id),
-          }));
-          setBusOptions(list);
+          setBusOptions(
+            (Array.isArray(arr) ? arr : []).map((v) => ({
+              id: String(v.id),
+              label: v.label || v.id,
+            }))
+          );
         }
       } catch {}
-
       try {
         const r = await fetch(`${base}/stops`);
         if (r.ok) {
@@ -100,17 +70,22 @@ export default function DriverApp() {
 
   const stopIdByName = useMemo(() => {
     const m = new Map();
-    stops.forEach((s) => m.set(s.name, String(s.id)));
+    stops.forEach((s) =>
+      m.set(s.name, String(s.id ?? s._id ?? s.name))
+    );
     return m;
   }, [stops]);
 
-  // GPS 자동 전송
+  // 🛰 GPS 자동 전송 (운행 중에만)
   useEffect(() => {
     if (!isDriving || !busId) return;
-    let timerId;
+    let timer;
 
     const loop = async () => {
-      if (!navigator.geolocation) return;
+      if (!navigator.geolocation) {
+        console.warn("이 기기는 위치 정보를 지원하지 않습니다.");
+        return;
+      }
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
           const base = await getBase();
@@ -131,63 +106,127 @@ export default function DriverApp() {
             console.warn("❌ 위치 전송 실패", err);
           }
         },
-        () => {},
-        { enableHighAccuracy: false, timeout: 15000, maximumAge: 5000 }
+        (err) => {
+          console.warn("GPS 에러", err);
+        }
       );
 
-      timerId = setTimeout(loop, GPS_POLL_MS);
+      timer = setTimeout(loop, GPS_POLL_MS);
     };
 
     loop();
-    return () => {
-      if (timerId) clearTimeout(timerId);
-    };
+    return () => timer && clearTimeout(timer);
   }, [isDriving, busId]);
 
+  // ----- 서버 헬퍼 -----
+  async function startActiveOnServer({ id, stopId, time, driver, route }) {
+    const base = await getBase();
+    const now = Date.now();
+    const start = new Date(now).toISOString();
+    const end = new Date(
+      now + SERVICE_WINDOW_MINUTES * 60 * 1000
+    ).toISOString();
+
+    try {
+      const res = await fetch(`${base}/bus/active/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: String(id),
+          stopId: String(stopId),
+          time: String(time),
+          driver,
+          route,
+          serviceWindow: { start, end },
+        }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function stopActiveOnServer(id) {
+    if (!id) return false;
+    const base = await getBase();
+    try {
+      const res = await fetch(`${base}/bus/active/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: String(id) }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  // ----- 운행 시작 / 종료 -----
   const handleToggle = async () => {
-    // 운행 종료
+    // 종료
     if (isDriving) {
       if (!window.confirm("운행을 종료하시겠습니까?")) return;
+
       const ok = await stopActiveOnServer(busId);
       if (!ok) {
-        alert("운행 종료 전송 실패(서버) — 다시 시도해주세요.");
-        return;
+        alert(
+          "운행 종료 요청이 서버에 반영되지 않았을 수 있습니다. 관리자에게 문의하세요."
+        );
       }
       setIsDriving(false);
+      setPassengers(0);
+      setActiveSession(null);
       setShowQR(false);
       return;
     }
 
-    // 운행 시작
+    // 시작
     if (!busId || !driver || !stopName || !time) {
       alert("버스, 기사, 정류장, 시간을 모두 입력해주세요.");
       return;
     }
 
-    const trimmedTime = String(time).trim();
-    const now = Date.now();
-    const start = new Date(now).toISOString();
-    const end = new Date(now + SERVICE_WINDOW_MINUTES * 60 * 1000).toISOString();
     const sid = stopIdByName.get(stopName) || stopId || stopName;
-
     const ok = await startActiveOnServer({
-      id: String(busId),
-      stopId: String(sid),
-      time: trimmedTime,
+      id: busId,
+      stopId: sid,
+      time,
       driver,
-      route: "안산대 셔틀",
-      serviceWindow: { start, end },
+      route: `셔틀 (${busId})`,
     });
 
     if (!ok) {
-      alert("운행 시작 실패(서버 통신 오류)");
+      alert("운행 시작 실패! (서버 응답 오류)");
       return;
     }
 
-    console.log(`✅ 운행 시작: ${busId}, ${driver}, ${stopName}, ${trimmedTime}`);
     setIsDriving(true);
-    setShowQR(true);
+    setPassengers(0);
+    setActiveSession({ id: busId, stopId: sid, time });
+    console.log(`✅ 운행 시작: ${busId}, ${driver}, ${stopName}, ${time}`);
   };
+
+  // 새로고침/탭 닫을 때도 종료 시도
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      if (!activeSession) return;
+      // 동기 호출은 제한적이지만, 일단 Best Effort
+      navigator.sendBeacon &&
+        navigator.sendBeacon(
+          `${PROD_SERVER_URL}/bus/active/stop`,
+          new Blob(
+            [JSON.stringify({ id: String(activeSession.id) })],
+            { type: "application/json" }
+          )
+        );
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () =>
+      window.removeEventListener(
+        "beforeunload",
+        handleBeforeUnload
+      );
+  }, [activeSession]);
 
   const handleNowTime = () => {
     const d = new Date();
@@ -196,22 +235,20 @@ export default function DriverApp() {
     setTime(`${hh}:${mm}`);
   };
 
-  // QR URL (EVERYBUS_busId_time)
+  // QR (EVERYBUS_id_time 포맷)
   const [qrUrl, setQrUrl] = useState("");
   useEffect(() => {
-    (async () => {
-      if (busId && time) {
-        const data = `EVERYBUS_${busId}_${String(time).trim()}`;
-        const encoded = encodeURIComponent(data);
-        setQrUrl(
-          `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encoded}`
-        );
-      } else {
-        setQrUrl("");
-      }
-    })();
+    if (busId && time) {
+      const data = encodeURIComponent(
+        `EVERYBUS_${busId}_${time}`
+      );
+      setQrUrl(
+        `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${data}`
+      );
+    } else setQrUrl("");
   }, [busId, time]);
 
+  // ----- UI -----
   return (
     <div className="page-container">
       <header className="page-header">
@@ -240,68 +277,121 @@ export default function DriverApp() {
             </div>
 
             <div className="card">
-              <div className="card-subtitle">승객 QR 코드</div>
+              <div className="card-subtitle">
+                승객용 QR 코드
+              </div>
               {qrUrl ? (
                 <img
                   src={qrUrl}
                   alt="QR"
-                  style={{ width: 220, height: 220, margin: "auto" }}
+                  style={{
+                    width: 220,
+                    height: 220,
+                    margin: "auto",
+                  }}
                 />
               ) : (
-                <div className="info-text">QR 생성 중...</div>
+                <div className="info-text">
+                  QR 생성 중...
+                </div>
               )}
             </div>
 
-            <button className="button-primary stop" onClick={handleToggle}>
+            <button
+              className="button-primary stop"
+              onClick={handleToggle}
+            >
               운행 종료
             </button>
           </>
         ) : (
           <>
+            {/* 1. 버스 선택 */}
             <div className="card">
-              <div className="card-subtitle">1️⃣ 버스 선택</div>
+              <div className="card-subtitle">
+                1️⃣ 버스 선택
+              </div>
               {busOptions.map((b) => (
-                <label key={b.id} style={{ display: "block", margin: "4px 0" }}>
+                <label
+                  key={b.id}
+                  style={{
+                    display: "block",
+                    margin: "4px 0",
+                  }}
+                >
                   <input
                     type="radio"
                     name="bus"
                     value={b.id}
                     checked={busId === b.id}
-                    onChange={() => setBusId(b.id)}
+                    onChange={() =>
+                      setBusId(b.id)
+                    }
                   />{" "}
                   {b.label}
                 </label>
               ))}
             </div>
 
+            {/* 2. 기사 선택 */}
             <div className="card">
-              <div className="card-subtitle">2️⃣ 기사 선택</div>
+              <div className="card-subtitle">
+                2️⃣ 기사 선택
+              </div>
               {driverOptions.map((d) => (
-                <label key={d} style={{ display: "block", margin: "4px 0" }}>
+                <label
+                  key={d}
+                  style={{
+                    display: "block",
+                    margin: "4px 0",
+                  }}
+                >
                   <input
                     type="radio"
                     name="driver"
                     value={d}
-                    checked={driver === d}
-                    onChange={() => setDriver(d)}
+                    checked={
+                      driver === d
+                    }
+                    onChange={() =>
+                      setDriver(d)
+                    }
                   />{" "}
                   {d}
                 </label>
               ))}
             </div>
 
+            {/* 3. 정류장 선택 */}
             <div className="card">
-              <div className="card-subtitle">3️⃣ 정류장 선택</div>
+              <div className="card-subtitle">
+                3️⃣ 정류장 선택
+              </div>
               {stops.map((s) => (
-                <label key={s.id} style={{ display: "block", margin: "4px 0" }}>
+                <label
+                  key={s.id}
+                  style={{
+                    display: "block",
+                    margin: "4px 0",
+                  }}
+                >
                   <input
                     type="radio"
                     name="stop"
                     value={s.name}
-                    checked={stopName === s.name}
+                    checked={
+                      stopName ===
+                      s.name
+                    }
                     onChange={() => {
-                      setStopName(s.name);
-                      setStopId(String(s.id));
+                      setStopName(
+                        s.name
+                      );
+                      setStopId(
+                        String(
+                          s.id
+                        )
+                      );
                     }}
                   />{" "}
                   {s.name}
@@ -309,21 +399,21 @@ export default function DriverApp() {
               ))}
             </div>
 
+            {/* 4. 시간 설정 */}
             <div className="card">
-              <div className="card-subtitle">4️⃣ 출발 시간 설정</div>
+              <div className="card-subtitle">
+                4️⃣ 출발 시간 설정
+              </div>
               <input
                 type="time"
                 className="text-input"
                 value={time}
-                onChange={(e) => setTime(e.target.value)}
-                style={{
-                  fontSize: "1.1rem",
-                  width: "100%",
-                  padding: "10px",
-                  borderRadius: "8px",
-                  border: "1px solid #ccc",
-                  background: "#fdfdfd",
-                }}
+                onChange={(e) =>
+                  setTime(
+                    e.target
+                      .value
+                  )
+                }
               />
               <button
                 className="button-primary start"
@@ -334,20 +424,40 @@ export default function DriverApp() {
               </button>
             </div>
 
-            <button className="button-primary start" onClick={handleToggle}>
+            <button
+              className="button-primary start"
+              onClick={handleToggle}
+            >
               운행 시작
             </button>
           </>
         )}
       </div>
 
+      {/* QR 모달 (필요 시 사용) */}
       {isDriving && showQR && (
-        <div className="qr-modal-overlay" onClick={() => setShowQR(false)}>
+        <div
+          className="qr-modal-overlay"
+          onClick={() =>
+            setShowQR(false)
+          }
+        >
           <div
             className="qr-modal-content"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) =>
+              e.stopPropagation()
+            }
           >
-            {qrUrl ? <img src={qrUrl} alt="QR" /> : <div>QR 생성 중...</div>}
+            {qrUrl ? (
+              <img
+                src={qrUrl}
+                alt="QR"
+              />
+            ) : (
+              <div>
+                QR 생성 중...
+              </div>
+            )}
           </div>
         </div>
       )}
