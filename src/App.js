@@ -17,7 +17,8 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { QrScanner } from "@yudiel/react-qr-scanner";
+import { Scanner } from "@yudiel/react-qr-scanner";
+
 
 import "./App.css";
 
@@ -805,22 +806,29 @@ const QrCheckScreen = () => {
   const [lastCode, setLastCode] = useState("");
   const [status, setStatus] = useState("READY"); // READY | SENDING | DONE | ERROR
 
-  const handleDecode = async (text) => {
-    if (!text) return;
-    if (text === lastCode && status === "DONE") return;
+  const handleScan = async (detected) => {
+    // detected = 배열일 수도 있고, null 일 수도 있음
+    if (!detected || detected.length === 0) return;
+
+    const value =
+      detected[0]?.rawValue ??
+      detected[0]?.value ??
+      (typeof detected[0] === "string" ? detected[0] : "");
+
+    if (!value) return;
+    if (value === lastCode && status === "DONE") return;
     if (status === "SENDING") return;
 
-    setLastCode(text);
+    setLastCode(value);
     setStatus("SENDING");
 
     try {
       const base = await getServerURL();
-      // 서버에 체크인 기록 전송 (엔드포인트 없으면 실패해도 무시)
       await fetch(`${base}/qr/checkin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          code: text,
+          code: value,
           ts: Date.now(),
           ua: navigator.userAgent,
         }),
@@ -844,12 +852,14 @@ const QrCheckScreen = () => {
       </div>
 
       <div className="qr-wrap" style={{ marginTop: 16 }}>
-        <QrScanner
-          onDecode={handleDecode}
+        <Scanner
+          onScan={handleScan}
           onError={(err) => console.warn("[QR] error", err)}
           constraints={{ facingMode: "environment" }}
-          containerStyle={{ width: "100%" }}
-          videoStyle={{ width: "100%" }}
+          components={{ // 기본 UI 최대한 심플하게
+            finder: true,
+          }}
+          style={{ width: "100%" }}
         />
       </div>
 
