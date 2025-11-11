@@ -1,4 +1,4 @@
-// App.js — EveryBus React UI (노선 폴리라인 + 라이브 위치 + ETA)
+// App.js — EveryBus React UI (노선 폴리라인 + 라이브 위치 + ETA + QR 체크인)
 import React, {
   useEffect,
   useRef,
@@ -17,6 +17,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
+import { QrReader } from "react-qr-reader";
 import "./App.css";
 
 /********************** 환경값 **********************/
@@ -146,7 +147,7 @@ function useUserLocation(setUserLocation) {
               console.warn("⚠️ 위치 폴백 좌표 사용");
               _gpsFallbackWarned = true;
             }
-            setUserLocation({ lat: 37.3308, lng: 126.8398 }); // 안산대 근처
+            setUserLocation({ lat: 37.3308, lng: 126.8398 });
           }
         }
       }
@@ -365,6 +366,7 @@ const Page = ({ title, children, right }) => {
           <TabItem to="/" icon="🏠" label="홈" />
           <TabItem to="/favorites" icon="⭐" label="즐겨찾기" />
           <TabItem to="/alerts" icon="🔔" label="알림" />
+          <TabItem to="/qr" icon="📷" label="QR" />
         </div>
       </div>
     </div>
@@ -457,7 +459,6 @@ const HomeScreen = () => {
     routeLinesRef.current = [];
 
     if (!routes || !routes.length) return;
-
     const kakao = window.kakao;
 
     routes.forEach((rt, idx) => {
@@ -477,7 +478,7 @@ const HomeScreen = () => {
     });
   }, [routes]);
 
-  // 차량 오버레이 (홈에서 선택된 차량만)
+  // 차량 오버레이
   useEffect(() => {
     if (!window.kakao?.maps || !mapRef.current) return;
     busOverlays.current.forEach((o) => o.setMap(null));
@@ -676,7 +677,6 @@ const StopDetail = () => {
   const mapRef = useRef(null);
   const mapEl = useRef(null);
 
-  // 정류장에 맞는 노선 선택 (공백/번호 모두 처리)
   const activeRoute = useMemo(() => {
     if (!routes || !routes.length || !stop) return null;
 
@@ -695,7 +695,6 @@ const StopDetail = () => {
     return routes.find((r) => r.name === targetName) || null;
   }, [routes, stop]);
 
-  // 지도 초기화 + 마커 + 노선
   useEffect(() => {
     (async () => {
       await loadKakaoMaps();
@@ -729,7 +728,6 @@ const StopDetail = () => {
     })();
   }, [stop, activeRoute]);
 
-  // 이 정류장의 운행중 시간대
   const activeTimes = useMemo(() => {
     const set = new Set();
     vehicles.forEach((v) => {
@@ -793,6 +791,90 @@ const StopDetail = () => {
               </button>
             ))}
           </div>
+        )}
+      </div>
+    </Page>
+  );
+};
+
+/********************** QR 체크인 **********************/
+const QrCheckScreen = () => {
+  const { addNotice } = useApp();
+  const [lastCode, setLastCode] = useState("");
+  const [status, setStatus] = useState("READY"); // READY | SENDING | DONE | ERROR
+
+  const handleResult = async (result, error) => {
+    if (error) {
+      // 콘솔만 조용히
+      return;
+    }
+    if (!result) return;
+
+    const text = result?.text || String(result);
+    if (!text || text === lastCode || status === "SENDING") return;
+
+    setLastCode(text);
+    setStatus("SENDING");
+
+    try {
+      const base = await getServerURL();
+      // 백엔드에 QR 체크인 기록 전송 (엔드포인트 있으면 사용, 없어도 앱은 안죽음)
+      await fetch(`${base}/qr/checkin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: text,
+          ts: Date.now(),
+          ua: navigator.userAgent,
+        }),
+      }).catch(() => {});
+
+      if (addNotice) addNotice("QR 체크인 완료");
+      setStatus("DONE");
+    } catch (e) {
+      console.warn("[QR] 체크인 전송 실패", e);
+      setStatus("ERROR");
+    }
+  };
+
+  return (
+    <Page title="QR 체크인">
+      <div className="card">
+        <div className="card-subtitle">버스 / 정류장 QR을 스캔하세요</div>
+        <div className="info-text">
+          카메라 사용을 허용하면 자동으로 인식됩니다.
+        </div>
+      </div>
+
+      <div className="qr-wrap" style={{ marginTop: 16 }}>
+        <QrReader
+          onResult={handleResult}
+          constraints={{ facingMode: "environment" }}
+          containerStyle={{ width: "100%" }}
+          videoStyle={{ width: "100%" }}
+        />
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-subtitle">스캔 결과</div>
+        {lastCode ? (
+          <>
+            <div className="info-text" style={{ wordWrap: "break-word" }}>
+              {lastCode}
+            </div>
+            <div className="info-text" style={{ marginTop: 6 }}>
+              상태:{" "}
+              {status === "DONE"
+                ? "서버 전송 완료 (또는 로컬 처리 완료)"
+                : status === "SENDING"
+                ? "서버 전송 중..."
+                : status === "ERROR"
+                ? "전송 실패 (QR은 인식됨)"
+                : "인식 완료"}
+            </div>
+          </>
+        ) : (
+          <div className="info-text">아직 스캔된 QR이 없습니다.</div>
         )}
       </div>
     </Page>
@@ -1037,7 +1119,7 @@ export default function App() {
 
   useUserLocation(setUserLocation);
 
-  // 정류장 공통 로드
+  // 정류장
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -1054,10 +1136,9 @@ export default function App() {
     return () => {
       alive = false;
     };
-    // favIds 바뀌면 favorite 표시만 다시 맞춰지도록
   }, [favIds]);
 
-  // 차량 폴링
+  // 차량
   useEffect(() => {
     let alive = true;
     const run = async () => {
@@ -1072,7 +1153,7 @@ export default function App() {
     };
   }, []);
 
-  // 노선 로드
+  // 노선
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -1118,6 +1199,7 @@ export default function App() {
           <Route path="/" element={<HomeScreen />} />
           <Route path="/favorites" element={<FavoritesScreen />} />
           <Route path="/alerts" element={<AlertsScreen />} />
+          <Route path="/qr" element={<QrCheckScreen />} />
           <Route path="/stop/:id" element={<StopDetail />} />
           <Route path="/stop/:id/live/:time" element={<TimeLiveScreen />} />
           <Route
