@@ -1,14 +1,17 @@
-// DriverApp.js — EveryBus 기사님용 (Render 서버 연동 완성본)
+// DriverApp.js — EveryBus 기사님용 (Render 서버 연동 + 좌석 실시간 표시)
 // 서버: https://project-1-ek9j.onrender.com
-// 기능: 운행 시작/종료, 실시간 위치 전송, 탑승자 수 확인, QR코드 발급
-// 수정: 버스 선택 시 DB(/vehicles)에 등록된 실시간 셔틀 목록 사용
+// 기능: 운행 시작/종료, 실시간 위치 전송, 탑승자 수/남은 좌석 확인, QR코드 발급
+// 변경점:
+//  - /bus/active 를 주기적으로 조회해서 현재 탑승 인원(onboard)과 남은 좌석(capacity - onboard)를 표시
 
 import React, { useState, useEffect, useMemo } from "react";
 import "./App.css";
 
 const PROD_SERVER_URL = "https://project-1-ek9j.onrender.com";
 const LOCAL_SERVER_URL = "http://localhost:5000";
-const GPS_POLL_MS = 8000; // 위치 갱신 주기 (8초)
+
+const GPS_POLL_MS = 8000;            // 위치 갱신 주기
+const PASSENGER_POLL_MS = 5000;      // 탑승 인원 갱신 주기
 const SERVICE_WINDOW_MINUTES = 120;
 
 let cachedBase = null;
@@ -22,10 +25,44 @@ async function getBase() {
         console.log(`✅ 연결된 서버: ${b}`);
         return b;
       }
-    } catch {}
+    } catch (e) {
+      // ignore
+    }
   }
   cachedBase = PROD_SERVER_URL;
   return cachedBase;
+}
+
+// /bus/active 응답에서 좌석 정보 가져오기 유틸
+function extractSeatInfo(raw, busId) {
+  if (!raw) return null;
+  const list = Array.isArray(raw) ? raw : [raw];
+
+  const item = list.find(
+    (v) => v && String(v.id) === String(busId)
+  );
+  if (!item) return null;
+
+  const capacity = Number(
+    item.capacity ??
+      item.seatCapacity ??
+      item.maxSeats ??
+      item.totalSeats ??
+      24 // 기본 좌석 수. 서버에서 capacity 내려주면 이건 무시됨
+  );
+  const onboard = Number(
+    item.onboard ??
+      item.passengers ??
+      item.currentPassengers ??
+      0
+  );
+
+  if (!Number.isFinite(capacity) || capacity <= 0) return null;
+
+  const safeOnboard = Number.isFinite(onboard) && onboard >= 0 ? onboard : 0;
+  const left = Math.max(0, capacity - safeOnboard);
+
+  return { capacity, onboard: safeOnboard, left };
 }
 
 export default function DriverApp() {
@@ -34,11 +71,16 @@ export default function DriverApp() {
   const [stopName, setStopName] = useState("");
   const [stopId, setStopId] = useState("");
   const [time, setTime] = useState("");
+
   const [isDriving, setIsDriving] = useState(false);
-  const [passengers] = useState(0);
+
+  // 좌석 정보 상태
+  const [capacity, setCapacity] = useState(null);
+  const [onboard, setOnboard] = useState(0);
+
   const [showQR, setShowQR] = useState(false);
 
-  // busOptions: [{ id, label }]
+  // 선택 가능한 버스, 정류장 목록
   const [busOptions, setBusOptions] = useState([]);
   const [stops, setStops] = useState([]);
 
@@ -111,6 +153,7 @@ export default function DriverApp() {
     })();
   }, []);
 
+  // 정류장 이름 -> id 매핑
   const stopIdByName = useMemo(() => {
     const m = new Map();
     stops.forEach((s) => m.set(s.name, String(s.id)));
@@ -123,30 +166,73 @@ export default function DriverApp() {
     let timer;
 
     const loop = async () => {
-      if (!navigator.geolocation) return;
-      navigator.geolocation.getCurrentPosition(async (pos) => {
-        const base = await getBase();
-        try {
-          await fetch(`${base}/bus/location/${busId}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude,
-              heading: 0,
-            }),
-          });
-          console.log(
-            `📡 위치 전송(${busId}): ${pos.coords.latitude}, ${pos.coords.longitude}`
-          );
-        } catch (err) {
-          console.warn("❌ 위치 전송 실패", err);
+      if (!navigator.geolocation) {
+        console.warn("이 기기는 위치 정보를 지원하지 않습니다.");
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const base = await getBase();
+          try {
+            await fetch(`${base}/bus/location/${busId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                heading: 0,
+              }),
+            });
+            console.log(
+              `📡 위치 전송(${busId}): ${pos.coords.latitude}, ${pos.coords.longitude}`
+            );
+          } catch (err) {
+            console.warn("❌ 위치 전송 실패", err);
+          }
+        },
+        (err) => {
+          console.warn("❌ 위치 가져오기 실패", err);
         }
-      });
+      );
+
       timer = setTimeout(loop, GPS_POLL_MS);
     };
 
     loop();
+    return () => clearTimeout(timer);
+  }, [isDriving, busId]);
+
+  /* 🧍‍♀️🧍‍♂️ 탑승 인원/남은 좌석: 운행 중일 때 /bus/active 주기 조회 */
+  useEffect(() => {
+    if (!isDriving || !busId) {
+      setOnboard(0);
+      // capacity는 그대로 두거나 초기화. 여기서는 유지.
+      return;
+    }
+
+    let timer;
+
+    const pollPassengers = async () => {
+      try {
+        const base = await getBase();
+        const r = await fetch(`${base}/bus/active`);
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const data = await r.json();
+
+        const seat = extractSeatInfo(data, busId);
+        if (seat) {
+          setCapacity(seat.capacity);
+          setOnboard(seat.onboard);
+        }
+      } catch (e) {
+        console.warn("❌ 탑승 인원 조회 실패", e);
+      }
+
+      timer = setTimeout(pollPassengers, PASSENGER_POLL_MS);
+    };
+
+    pollPassengers();
     return () => clearTimeout(timer);
   }, [isDriving, busId]);
 
@@ -173,9 +259,12 @@ export default function DriverApp() {
       if (!window.confirm("운행을 종료하시겠습니까?")) return;
       await sendActiveToServer({
         id: busId,
-        active: false, // server.js에서 종료 처리
+        active: false,
       });
       setIsDriving(false);
+      setShowQR(false);
+      // 종료 시 탑승 인원 표시 초기화(원하면 유지해도 됨)
+      // setOnboard(0);
       return;
     }
 
@@ -193,13 +282,15 @@ export default function DriverApp() {
     const sid = stopIdByName.get(stopName) || stopId || stopName;
 
     const ok = await sendActiveToServer({
-      id: busId, // 실제 DB vehicle id
+      id: busId,
       stopId: sid,
       time,
       driver,
-      route: "안산대 셔틀", // 필요하면 /vehicles에서 라벨 사용하도록 바꿔도 됨
+      route: "안산대 셔틀",
       active: true,
       serviceWindow: { start, end },
+      // capacity는 서버에서 vehicle 정보 기반으로 넣어도 되고 여기서 넣어도 됨
+      // capacity: 24,
     });
 
     if (!ok) {
@@ -208,6 +299,7 @@ export default function DriverApp() {
     }
 
     setIsDriving(true);
+    setShowQR(true);
     console.log(`✅ 운행 시작: ${busId}, ${driver}, ${stopName}, ${time}`);
   };
 
@@ -218,19 +310,26 @@ export default function DriverApp() {
     setTime(`${hh}:${mm}`);
   };
 
-  /* 🧾 QR URL 자동 생성 */
+  /* 🧾 QR URL 자동 생성 — code 안에 busId, time 포함 */
   const [qrUrl, setQrUrl] = useState("");
   useEffect(() => {
     (async () => {
-      const base = await getBase();
+      const base = await getBase(); // 안 써도 되지만 혹시 base 기반으로 바꾸고 싶으면 사용
       if (busId && time) {
-        const encoded = encodeURIComponent(`EVERYBUS_${busId}_${time}`);
+        // 예: EVERYBUS_{busId}_{time}
+        const payload = `EVERYBUS_${busId}_${time}`;
+        const encoded = encodeURIComponent(payload);
         setQrUrl(
           `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encoded}`
         );
-      } else setQrUrl("");
+      } else {
+        setQrUrl("");
+      }
     })();
   }, [busId, time]);
+
+  const leftSeats =
+    capacity != null ? Math.max(0, capacity - onboard) : null;
 
   return (
     <div className="page-container">
@@ -243,6 +342,7 @@ export default function DriverApp() {
       <div className="page-content" style={{ marginTop: 20 }}>
         {isDriving ? (
           <>
+            {/* 현재 운행 정보 + 좌석 상태 */}
             <div className="card">
               <div className="card-subtitle">현재 운행 정보</div>
               <div className="info-item">
@@ -261,8 +361,31 @@ export default function DriverApp() {
               <div className="info-item">
                 <b>출발 시간:</b> {time}
               </div>
+
+              <div className="divider" />
+
+              <div className="info-item">
+                <b>탑승 인원:</b>{" "}
+                {onboard} 명
+              </div>
+              <div className="info-item">
+                <b>남은 좌석:</b>{" "}
+                {leftSeats != null
+                  ? `${leftSeats} 석`
+                  : "좌석 정보 없음 (서버에서 capacity 제공 필요)"}
+              </div>
+              {capacity != null && (
+                <div className="info-text" style={{ marginTop: 4 }}>
+                  (총 좌석수: {capacity}석)
+                </div>
+              )}
+              <div className="info-text" style={{ marginTop: 4 }}>
+                ※ 승객이 QR 체크인할 때마다 서버의 onboard 값이 업데이트되면,
+                이 화면의 숫자가 자동으로 갱신됩니다.
+              </div>
             </div>
 
+            {/* QR 코드 */}
             <div className="card">
               <div className="card-subtitle">승객 QR 코드</div>
               {qrUrl ? (
@@ -274,6 +397,11 @@ export default function DriverApp() {
               ) : (
                 <div className="info-text">QR 생성 중...</div>
               )}
+              <div className="info-text" style={{ marginTop: 6 }}>
+                이 QR을 승객 앱에서 스캔하면 이 버스 탑승으로 기록되도록
+                서버의 <code>/qr/checkin</code> 로직을 구현하세요.
+                (코드: <code>EVERYBUS_{`{busId}_{time}`}</code>)
+              </div>
             </div>
 
             <button className="button-primary stop" onClick={handleToggle}>
