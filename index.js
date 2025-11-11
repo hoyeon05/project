@@ -1,6 +1,7 @@
 // server.js
-// EveryBus 백엔드 — MongoDB Atlas(busdb) + CORS + 시간표/차량 API
-// + 운행중 메타(/bus/active) + 노선(/routes) + 대기(/wait)
+// EveryBus 백엔드 — MongoDB Atlas(busdb) + CORS
+// 시간표(/timebus) + 차량 GPS(/bus/location) + 운행중 메타(/bus/active)
+// 노선(/routes) + 대기(/wait) + 기사앱용 /vehicles + 탑승(/board)
 
 const express = require("express");
 const cors = require("cors");
@@ -27,11 +28,11 @@ const MONGO_URI =
 
 /* ---------------------- 스키마 ---------------------- */
 
-// 버스(GPS)
+// 버스(GPS 단말)
 const VehicleSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, unique: true },
-    route: { type: String, default: "미정" },
+    route: { type: String, default: "미정" }, // 표시용 이름(1호차, 2호차 등)
     lat: { type: Number, default: null },
     lng: { type: Number, default: null },
     heading: { type: Number, default: 0 },
@@ -71,19 +72,21 @@ const TimebusSchema = new mongoose.Schema(
 );
 const Timebus = mongoose.model("Timebus", TimebusSchema);
 
-// 실시간 운행 메타
+// 실시간 운행 메타 + 좌석
 const ActiveBusSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, unique: true }, // Vehicle.id / 기사앱 ID
     stopId: { type: String, required: true },
     time: { type: String, required: true }, // "HH:MM"
     driver: { type: String, default: null },
-    route: { type: String, default: null }, // 표시용 이름
+    route: { type: String, default: null }, // 표시용
     active: { type: Boolean, default: true },
     serviceWindow: {
       start: { type: Date, default: null },
       end: { type: Date, default: null },
     },
+    capacity: { type: Number, default: 45 }, // 좌석 수
+    boarded: { type: Number, default: 0 }, // 탑승 완료 인원 수
     updatedAt: { type: Date, default: Date.now },
   },
   { collection: "ActiveBus", timestamps: false }
@@ -106,7 +109,7 @@ const RouteSchema = new mongoose.Schema(
 );
 const Route = mongoose.model("Route", RouteSchema);
 
-// 대기 토큰(간단 버전)
+// 대기 토큰
 const WaitSchema = new mongoose.Schema(
   {
     busId: { type: String, required: true },
@@ -125,6 +128,7 @@ const Wait = mongoose.model("Wait", WaitSchema);
 app.get("/", (_req, res) =>
   res.type("text/plain").send("EVERYBUS API OK")
 );
+
 app.get("/health", (_req, res) =>
   res.json({
     ok: true,
@@ -153,7 +157,7 @@ app.get("/stops", async (_req, res) => {
       .filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lng));
 
     if (out.length === 0) {
-      // DB 비었을 때 기본 3개
+      // DB 비었을 때 기본 좌표
       return res.json([
         {
           id: "1",
@@ -175,6 +179,7 @@ app.get("/stops", async (_req, res) => {
         },
       ]);
     }
+
     res.json(out);
   } catch (e) {
     console.error("❌ /stops:", e);
@@ -233,27 +238,23 @@ app.post("/bus/location/:imei", async (req, res) => {
 });
 
 /* ---------------------- /vehicles (기사앱용 선택 목록) ---------------------- */
+/** 실제 단말(버스) 목록만 사용
+ *  - Vehicle 컬렉션 기준
+ *  - label: route 있으면 route, 없으면 id
+ */
 app.get("/vehicles", async (_req, res) => {
   try {
-    const docs = await Timebus.find({})
-      .select("routeId direction -_id")
+    const docs = await Vehicle.find({})
+      .select("id route -_id")
       .lean();
-    const rawIds = docs
-      .map((d) => d.routeId || d.direction)
-      .filter(Boolean);
-    const uniqIds = [...new Set(rawIds)];
 
-    const labelMap = {
-      "ansan-line-1": "1호차",
-      "ansan-line-2": "2호차",
-      "상록수역→대학": "셔틀A",
-      "대학→상록수역": "셔틀B",
-    };
+    const list = (docs || [])
+      .filter((v) => v.id)
+      .map((v) => ({
+        id: String(v.id),
+        label: v.route ? String(v.route) : String(v.id),
+      }));
 
-    const list = uniqIds.map((id) => ({
-      id,
-      label: labelMap[id] || id,
-    }));
     res.json(list);
   } catch (e) {
     console.error("❌ /vehicles:", e);
@@ -295,22 +296,34 @@ app.get("/timebus", async (req, res) => {
   }
 });
 
-/* ---------------------- /bus/active (운행중 메타) ---------------------- */
+/* ---------------------- /bus/active (운행중 메타 + 좌석) ---------------------- */
+
 // GET: 사용자앱에서 사용
 app.get("/bus/active", async (_req, res) => {
   try {
     const rows = await ActiveBus.find({ active: true }).lean();
     res.json(
-      rows.map((r) => ({
-        id: String(r.id),
-        stopId: String(r.stopId),
-        time: r.time,
-        driver: r.driver || null,
-        route: r.route || null,
-        active: !!r.active,
-        serviceWindow: r.serviceWindow || null,
-        updatedAt: r.updatedAt || null,
-      }))
+      rows.map((r) => {
+        const capacity = Number.isFinite(r.capacity)
+          ? r.capacity
+          : 45;
+        const boarded = Number.isFinite(r.boarded)
+          ? r.boarded
+          : 0;
+        return {
+          id: String(r.id),
+          stopId: String(r.stopId),
+          time: r.time,
+          driver: r.driver || null,
+          route: r.route || null,
+          active: !!r.active,
+          serviceWindow: r.serviceWindow || null,
+          capacity,
+          boarded,
+          seatsLeft: Math.max(capacity - boarded, 0),
+          updatedAt: r.updatedAt || null,
+        };
+      })
     );
   } catch (e) {
     console.error("❌ /bus/active GET:", e);
@@ -318,7 +331,7 @@ app.get("/bus/active", async (_req, res) => {
   }
 });
 
-// PUT: 기사앱 업서트
+// PUT: 기사앱 업서트 (시작/갱신 + 종료 공통 처리)
 app.put("/bus/active", async (req, res) => {
   try {
     const {
@@ -329,12 +342,32 @@ app.put("/bus/active", async (req, res) => {
       route,
       active,
       serviceWindow,
+      capacity,
     } = req.body || {};
-    if (!id || !stopId || !time) {
+
+    if (!id) {
+      return res.status(400).json({ error: "id 필수" });
+    }
+
+    // 종료 처리: active === false 인 경우 stopId/time 없어도 됨
+    if (active === false) {
+      await ActiveBus.updateOne(
+        { id: String(id) },
+        { $set: { active: false, updatedAt: new Date() } }
+      );
+      return res.json({ ok: true, id: String(id), stopped: true });
+    }
+
+    // 시작/업데이트: 필수값 필요
+    if (!stopId || !time) {
       return res
         .status(400)
-        .json({ error: "id, stopId, time 필수" });
+        .json({ error: "운행 시작/갱신 시 stopId, time 필수" });
     }
+
+    const cap = Number.isFinite(Number(capacity))
+      ? Number(capacity)
+      : 45;
 
     const doc = await ActiveBus.findOneAndUpdate(
       { id: String(id) },
@@ -344,14 +377,24 @@ app.put("/bus/active", async (req, res) => {
           time: String(time),
           driver: driver ?? null,
           route: route ?? null,
-          active: active !== false,
+          active: true,
           serviceWindow: serviceWindow || null,
+          capacity: cap,
           updatedAt: new Date(),
+        },
+        $setOnInsert: {
+          boarded: 0,
         },
       },
       { new: true, upsert: true }
     );
-    res.json({ ok: true, id: doc.id });
+
+    res.json({
+      ok: true,
+      id: doc.id,
+      capacity: doc.capacity,
+      boarded: doc.boarded,
+    });
   } catch (e) {
     console.error("❌ /bus/active PUT:", e);
     res.status(500).json({ error: "active 업서트 실패" });
@@ -361,12 +404,17 @@ app.put("/bus/active", async (req, res) => {
 // 호환용 시작
 app.post("/bus/active/start", async (req, res) => {
   try {
-    const { id, stopId, time, driver, route, serviceWindow } =
+    const { id, stopId, time, driver, route, serviceWindow, capacity } =
       req.body || {};
     if (!id || !stopId || !time)
       return res
         .status(400)
         .json({ error: "id, stopId, time 필수" });
+
+    const cap = Number.isFinite(Number(capacity))
+      ? Number(capacity)
+      : 45;
+
     await ActiveBus.updateOne(
       { id: String(id) },
       {
@@ -377,7 +425,9 @@ app.post("/bus/active/start", async (req, res) => {
           route: route ?? null,
           active: true,
           serviceWindow: serviceWindow || null,
+          capacity: cap,
           updatedAt: new Date(),
+          boarded: 0,
         },
       },
       { upsert: true }
@@ -389,7 +439,7 @@ app.post("/bus/active/start", async (req, res) => {
   }
 });
 
-// 호환용 종료 (기사 앱에서 운행 종료 / 창 닫기 시 호출 추천)
+// 호환용 종료
 app.post("/bus/active/stop", async (req, res) => {
   try {
     const { id } = req.body || {};
@@ -406,9 +456,100 @@ app.post("/bus/active/stop", async (req, res) => {
   }
 });
 
+/* ---------------------- 탑승 처리 (/board) ---------------------- */
+/**
+ * QR 스캔 시 호출:
+ *  - QR 데이터 형식: "EVERYBUS_{busId}_{time}"
+ *  - 또는 body에 { busId, time } 직접 전달 가능
+ * 좌석 1명씩 차감(=boarded +1), 만석이면 full 반환
+ */
+app.post("/board", async (req, res) => {
+  try {
+    let { code, busId, time } = req.body || {};
+
+    if (!busId || !time) {
+      if (code && typeof code === "string") {
+        // 예: EVERYBUS_123456789012345_08:30
+        const parts = code.split("_");
+        if (parts.length >= 3 && parts[0] === "EVERYBUS") {
+          busId = parts[1];
+          time = parts.slice(2).join("_");
+        }
+      }
+    }
+
+    if (!busId || !time) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "busId,time 또는 QR code 필요" });
+    }
+
+    const key = {
+      id: String(busId),
+      time: String(time),
+      active: true,
+    };
+
+    const doc = await ActiveBus.findOne(key).lean();
+    if (!doc) {
+      return res.json({
+        ok: false,
+        error: "해당 시간에 활성 운행을 찾을 수 없습니다.",
+      });
+    }
+
+    const capacity = Number.isFinite(doc.capacity)
+      ? doc.capacity
+      : 45;
+
+    // 원자적 증가
+    const updated = await ActiveBus.findOneAndUpdate(
+      key,
+      {
+        $inc: { boarded: 1 },
+        $set: { updatedAt: new Date() },
+      },
+      { new: true }
+    );
+
+    const boarded = Number.isFinite(updated.boarded)
+      ? updated.boarded
+      : 0;
+    const seatsLeft = Math.max(capacity - boarded, 0);
+    const full = seatsLeft <= 0;
+
+    if (full) {
+      // 이미 가득 찼으면 되돌려주되, 넘치지 않게 처리하고 싶으면 여기서 -1 롤백 로직 추가 가능
+      return res.json({
+        ok: false,
+        full: true,
+        busId: String(busId),
+        time: String(time),
+        capacity,
+        boarded,
+        seatsLeft,
+        error: "만석입니다.",
+      });
+    }
+
+    res.json({
+      ok: true,
+      busId: String(busId),
+      time: String(time),
+      capacity,
+      boarded,
+      seatsLeft,
+      full: false,
+    });
+  } catch (e) {
+    console.error("❌ /board:", e);
+    res.status(500).json({ ok: false, error: "탑승 처리 실패" });
+  }
+});
+
 /* ---------------------- 대기 시스템 (/wait) ---------------------- */
 
-// 대기 등록
+// 대기 등록 (옵션: 필요 없으면 UI에서 안 쓰면 됨)
 app.post("/wait", async (req, res) => {
   try {
     const { busId, stopId, time } = req.body || {};
@@ -436,7 +577,6 @@ app.post("/wait", async (req, res) => {
 
     const waiting = await Wait.countDocuments(q);
 
-    // 좌석 제한 로직 필요하면 여기서 full 계산
     res.json({
       ok: true,
       token,
@@ -476,12 +616,11 @@ app.post("/wait/cancel", async (req, res) => {
   }
 });
 
-// 대기 요약 (프론트에서 폴링하는 엔드포인트)
+// 대기 요약
 app.get("/wait/summary", async (req, res) => {
   try {
     const { busId, stopId, time } = req.query || {};
     if (!busId && !stopId) {
-      // 최소한 busId 또는 stopId 하나는 있어야 의미 있음
       return res.json({
         ok: true,
         waiting: 0,
