@@ -340,31 +340,22 @@ app.get("/timebus", async (req, res) => {
 
 /* ---------------------- /bus/active (운행중 메타) ---------------------- */
 // GET: 사용자앱에서 사용
-app.get("/bus/active", async (_req, res) => {
+app.get("/bus/location", async (_req, res) => {
   try {
-    const q = { active: true };
-    if (ALLOWED_BUS_IDS && ALLOWED_BUS_IDS.length) {
-      q.id = { $in: ALLOWED_BUS_IDS };
-    }
-
-    const rows = await ActiveBus.find(q).lean();
-    res.json(
-      rows.map((r) => ({
-        id: String(r.id),
-        stopId: String(r.stopId),
-        time: r.time,
-        driver: r.driver || null,
-        route: r.route || null,
-        active: !!r.active,
-        serviceWindow: r.serviceWindow || null,
-        updatedAt: r.updatedAt || null,
-      }))
-    );
+    const vehicles = await Vehicle.find({
+      lat: { $ne: null },
+      lng: { $ne: null },
+      id: { $ne: "ansan-line-1" }, // 더미 제거
+    })
+      .select("id route lat lng heading updatedAt -_id")
+      .lean();
+    res.json(vehicles);
   } catch (e) {
-    console.error("❌ /bus/active GET:", e);
-    res.status(500).json({ error: "active 조회 실패" });
+    console.error("❌ /bus/location:", e);
+    res.status(500).json({ error: "버스 위치를 조회할 수 없습니다." });
   }
 });
+
 
 // PUT: 기사앱 업서트
 app.put("/bus/active", async (req, res) => {
