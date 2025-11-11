@@ -1,4 +1,4 @@
-// App.js — EveryBus React UI (노선 폴리라인 + 라이브 위치 + ETA + 대기 시스템)
+// App.js — EveryBus React UI (노선 폴리라인 + 라이브 위치 + ETA)
 import React, {
   useEffect,
   useRef,
@@ -43,7 +43,9 @@ async function getServerURL() {
         cachedServerURL = base;
         return base;
       }
-    } catch {}
+    } catch (e) {
+      // ignore
+    }
   }
   console.warn("⚠️ 서버 연결 실패, Render 기본 URL 사용");
   cachedServerURL = PROD_SERVER_URL;
@@ -82,16 +84,26 @@ function useUserLocation(setUserLocation) {
     let canceled = false;
 
     const logError = (err) => {
-      const map = { 1: "PERMISSION_DENIED", 2: "POSITION_UNAVAILABLE", 3: "TIMEOUT" };
+      const map = {
+        1: "PERMISSION_DENIED",
+        2: "POSITION_UNAVAILABLE",
+        3: "TIMEOUT",
+      };
       const code = err?.code;
       if (code === 1) {
         if (!_gpsPermissionWarned) {
-          console.warn(`GPS Error: ${map[code]}${err?.message ? ` — ${err.message}` : ""}`);
+          console.warn(
+            `GPS Error: ${map[code]}${err?.message ? ` — ${err.message}` : ""}`
+          );
           _gpsPermissionWarned = true;
         }
       } else {
         if (!_gpsGenericWarned) {
-          console.warn(`GPS Error: ${map[code] || "UNKNOWN"}${err?.message ? ` — ${err.message}` : ""}`);
+          console.warn(
+            `GPS Error: ${map[code] || "UNKNOWN"}${
+              err?.message ? ` — ${err.message}` : ""
+            }`
+          );
           _gpsGenericWarned = true;
         }
       }
@@ -109,7 +121,11 @@ function useUserLocation(setUserLocation) {
           timeout: 15000,
           maximumAge: 120000,
         });
-        if (!canceled) setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        if (!canceled)
+          setUserLocation({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          });
       } catch (e1) {
         logError(e1);
         try {
@@ -118,7 +134,11 @@ function useUserLocation(setUserLocation) {
             timeout: 20000,
             maximumAge: 0,
           });
-          if (!canceled) setUserLocation({ lat: pos2.coords.latitude, lng: pos2.coords.longitude });
+          if (!canceled)
+            setUserLocation({
+              lat: pos2.coords.latitude,
+              lng: pos2.coords.longitude,
+            });
         } catch (e2) {
           logError(e2);
           if (!canceled) {
@@ -133,16 +153,28 @@ function useUserLocation(setUserLocation) {
 
       const watchWith = (opts) =>
         navigator.geolocation.watchPosition(
-          (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          (pos) =>
+            setUserLocation({
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude,
+            }),
           (err) => logError(err),
           opts
         );
 
-      watchId = watchWith({ enableHighAccuracy: false, timeout: 20000, maximumAge: 30000 });
+      watchId = watchWith({
+        enableHighAccuracy: false,
+        timeout: 20000,
+        maximumAge: 30000,
+      });
 
       const t = setTimeout(() => {
         if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-        watchId = watchWith({ enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 });
+        watchId = watchWith({
+          enableHighAccuracy: true,
+          timeout: 20000,
+          maximumAge: 5000,
+        });
       }, 10000);
 
       return () => clearTimeout(t);
@@ -160,7 +192,6 @@ function useUserLocation(setUserLocation) {
 }
 
 /********************** 서버 데이터 **********************/
-// 정류장
 async function fetchStopsOnce() {
   const base = await getServerURL();
   try {
@@ -200,7 +231,6 @@ async function fetchVehiclesOnce() {
           id: key,
           stopId: a.stopId != null ? String(a.stopId) : prev.stopId,
           time: a.time != null ? String(a.time).trim() : prev.time,
-          capacity: a.capacity != null ? Number(a.capacity) : prev.capacity,
         };
         idx.set(key, { ...prev, ...norm });
       });
@@ -218,21 +248,32 @@ async function fetchRoutesOnce() {
   const base = await getServerURL();
   try {
     const r = await fetch(`${base}/routes`);
-    if (!r.ok) return [];
+    if (!r.ok) {
+      console.warn("[routes] HTTP", r.status);
+      return [];
+    }
     const data = await r.json();
-    if (!Array.isArray(data)) return [];
-    return data
+    if (!Array.isArray(data)) {
+      console.warn("[routes] invalid payload", data);
+      return [];
+    }
+    const list = data
       .map((rt) => ({
-        id: String(rt.id || rt._id || rt.name),
+        id: String(rt.id || rt._id || rt.name || ""),
         name: String(rt.name || ""),
         points: (rt.points || [])
           .map((p) => ({
             lat: Number(p.lat),
             lng: Number(p.lng),
           }))
-          .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng)),
+          .filter(
+            (p) => Number.isFinite(p.lat) && Number.isFinite(p.lng)
+          ),
       }))
-      .filter((rt) => rt.points.length > 0);
+      .filter((r) => r.id && r.name && r.points.length > 1);
+
+    console.log("🚏 routes loaded:", list.map((r) => r.name));
+    return list;
   } catch (e) {
     console.warn("[fetchRoutesOnce] /routes 에러:", e);
     return [];
@@ -241,19 +282,38 @@ async function fetchRoutesOnce() {
 
 /********************** 유틸 **********************/
 function isActiveNow(v) {
-  if (!v?.active) return false;
-  if (!v?.serviceWindow) return true;
-  try {
-    const now = Date.now();
-    const s = v.serviceWindow.start ? new Date(v.serviceWindow.start).getTime() : -Infinity;
-    const e = v.serviceWindow.end ? new Date(v.serviceWindow.end).getTime() : Infinity;
-    return now >= s && now <= e;
-  } catch {
-    return true;
+  if (!v || v.active !== true) return false;
+
+  const now = Date.now();
+
+  if (v.serviceWindow && (v.serviceWindow.start || v.serviceWindow.end)) {
+    try {
+      const s = v.serviceWindow.start
+        ? new Date(v.serviceWindow.start).getTime()
+        : -Infinity;
+      const e = v.serviceWindow.end
+        ? new Date(v.serviceWindow.end).getTime()
+        : Infinity;
+      if (Number.isFinite(s) || Number.isFinite(e)) {
+        return now >= s && now <= e;
+      }
+    } catch (e) {
+      console.warn("isActiveNow serviceWindow parse error", e);
+    }
   }
+
+  if (v.updatedAt) {
+    const up = new Date(v.updatedAt).getTime();
+    if (Number.isFinite(up)) {
+      const DIFF = now - up;
+      const ACTIVE_MS = 30 * 60 * 1000;
+      return DIFF >= 0 && DIFF <= ACTIVE_MS;
+    }
+  }
+
+  return false;
 }
 
-// Haversine (meters)
 function haversineMeters(a, b) {
   if (!a || !b) return NaN;
   const R = 6371e3;
@@ -268,27 +328,6 @@ function haversineMeters(a, b) {
     Math.cos(lat1) * Math.cos(lat2) * sin(dLng / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
   return R * c;
-}
-
-// 버스가 노선 근처(기본 200m 이내)에 있는지
-function isBusOnRoute(bus, route, thresholdMeters = 200) {
-  if (
-    !route ||
-    !route.points ||
-    route.points.length === 0 ||
-    !Number.isFinite(bus.lat) ||
-    !Number.isFinite(bus.lng)
-  ) {
-    return true; // 노선 정보 없으면 필터링 안함
-  }
-  const p = { lat: bus.lat, lng: bus.lng };
-  let min = Infinity;
-  for (const rp of route.points) {
-    const d = haversineMeters(p, { lat: rp.lat, lng: rp.lng });
-    if (d < min) min = d;
-    if (min <= thresholdMeters) return true;
-  }
-  return min <= thresholdMeters;
 }
 
 /********************** 토스트 **********************/
@@ -347,12 +386,12 @@ const TabItem = ({ to, icon, label }) => {
 const HomeScreen = () => {
   const {
     stops,
-    setStops,
     vehicles,
     visibleVehicleIds,
     favIds,
     toggleFav,
     userLocation,
+    routes,
   } = useApp();
 
   const mapRef = useRef(null);
@@ -360,8 +399,10 @@ const HomeScreen = () => {
   const busOverlays = useRef([]);
   const stopMarkers = useRef([]);
   const userMarkerRef = useRef(null);
+  const routeLinesRef = useRef([]);
   const nav = useNavigate();
 
+  // 지도 초기화
   useEffect(() => {
     (async () => {
       await loadKakaoMaps();
@@ -374,6 +415,7 @@ const HomeScreen = () => {
     })();
   }, []);
 
+  // 유저 위치 마커
   useEffect(() => {
     if (!userLocation || !window.kakao?.maps || !mapRef.current) return;
     const kakao = window.kakao;
@@ -393,18 +435,7 @@ const HomeScreen = () => {
     }
   }, [userLocation]);
 
-  useEffect(() => {
-    (async () => {
-      const data = await fetchStopsOnce();
-      setStops(
-        data.map((s) => ({
-          ...s,
-          favorite: favIds.has(String(s.id)),
-        }))
-      );
-    })();
-  }, [setStops, favIds]);
-
+  // 정류장 마커
   useEffect(() => {
     if (!window.kakao?.maps || !mapRef.current) return;
     stopMarkers.current.forEach((m) => m.setMap(null));
@@ -412,16 +443,48 @@ const HomeScreen = () => {
     stops.forEach((s) => {
       const pos = new window.kakao.maps.LatLng(s.lat, s.lng);
       const marker = new window.kakao.maps.Marker({ position: pos, map: mapRef.current });
-      window.kakao.maps.event.addListener(marker, "click", () => nav(`/stop/${s.id}`));
+      window.kakao.maps.event.addListener(marker, "click", () =>
+        nav(`/stop/${s.id}`)
+      );
       stopMarkers.current.push(marker);
     });
   }, [stops, nav]);
 
+  // 노선 폴리라인
+  useEffect(() => {
+    if (!window.kakao?.maps || !mapRef.current) return;
+    routeLinesRef.current.forEach((line) => line.setMap(null));
+    routeLinesRef.current = [];
+
+    if (!routes || !routes.length) return;
+
+    const kakao = window.kakao;
+
+    routes.forEach((rt, idx) => {
+      if (!rt.points || rt.points.length < 2) return;
+      const path = rt.points.map(
+        (p) => new kakao.maps.LatLng(p.lat, p.lng)
+      );
+      const polyline = new kakao.maps.Polyline({
+        map: mapRef.current,
+        path,
+        strokeWeight: 3,
+        strokeColor: idx % 2 === 0 ? "#007aff" : "#ff5e3a",
+        strokeOpacity: 0.6,
+        strokeStyle: "solid",
+      });
+      routeLinesRef.current.push(polyline);
+    });
+  }, [routes]);
+
+  // 차량 오버레이 (홈에서 선택된 차량만)
   useEffect(() => {
     if (!window.kakao?.maps || !mapRef.current) return;
     busOverlays.current.forEach((o) => o.setMap(null));
     busOverlays.current = [];
-    const visibleVehicles = vehicles.filter((v) => visibleVehicleIds.includes(v.id));
+    const visibleVehicles = vehicles.filter((v) =>
+      visibleVehicleIds.includes(v.id)
+    );
     visibleVehicles.forEach((v) => {
       if (!Number.isFinite(v.lat) || !Number.isFinite(v.lng)) return;
       const pos = new window.kakao.maps.LatLng(v.lat, v.lng);
@@ -438,6 +501,7 @@ const HomeScreen = () => {
     });
   }, [vehicles, visibleVehicleIds]);
 
+  // 정류장별 운행중 카운트
   const activeCountByStop = useMemo(() => {
     const m = new Map();
     vehicles.forEach((v) => {
@@ -575,7 +639,8 @@ const AlertsScreen = () => {
         <ul className="info-list">
           <li>현재 앱 내 토스트/알림은 비활성화되어 있어요.</li>
           <li>
-            알림을 다시 보이게 하려면 App.js 상단의 <b>NOTIFY_ENABLED</b>를 <code>true</code>로 바꾸세요.
+            알림을 다시 보이게 하려면 App.js 상단의{" "}
+            <b>NOTIFY_ENABLED</b>를 <code>true</code>로 바꾸세요.
           </li>
         </ul>
       </div>
@@ -600,7 +665,7 @@ const AlertsScreen = () => {
 /********************** 정류장 상세 **********************/
 const StopDetail = () => {
   const { id } = useParams();
-  const { stops, vehicles } = useApp();
+  const { stops, vehicles, routes } = useApp();
   const nav = useNavigate();
 
   const stop = useMemo(
@@ -611,22 +676,68 @@ const StopDetail = () => {
   const mapRef = useRef(null);
   const mapEl = useRef(null);
 
+  // 정류장에 맞는 노선 선택 (공백/번호 모두 처리)
+  const activeRoute = useMemo(() => {
+    if (!routes || !routes.length || !stop) return null;
+
+    const name = stop.name || "";
+    let targetName = null;
+
+    if (name.includes("안산대1") || name.includes("안산대 1")) {
+      targetName = "상록수-안산대 1";
+    } else if (name.includes("안산대2") || name.includes("안산대 2")) {
+      targetName = "상록수-안산대 2";
+    } else if (name.includes("상록수")) {
+      targetName = "상록수-안산대 1";
+    }
+
+    if (!targetName) return null;
+    return routes.find((r) => r.name === targetName) || null;
+  }, [routes, stop]);
+
+  // 지도 초기화 + 마커 + 노선
   useEffect(() => {
     (async () => {
       await loadKakaoMaps();
       if (!stop) return;
       const kakao = window.kakao;
       const center = new kakao.maps.LatLng(stop.lat, stop.lng);
-      mapRef.current = new kakao.maps.Map(mapEl.current, { center, level: 4 });
-      new kakao.maps.Marker({ position: center, map: mapRef.current });
-      setTimeout(() => mapRef.current && mapRef.current.relayout(), 0);
-    })();
-  }, [stop]);
 
+      const map = new kakao.maps.Map(mapEl.current, {
+        center,
+        level: 4,
+      });
+      mapRef.current = map;
+
+      new kakao.maps.Marker({ position: center, map });
+
+      if (activeRoute && activeRoute.points && activeRoute.points.length > 1) {
+        const path = activeRoute.points.map(
+          (p) => new kakao.maps.LatLng(p.lat, p.lng)
+        );
+        new kakao.maps.Polyline({
+          map,
+          path,
+          strokeWeight: 4,
+          strokeColor: "#007aff",
+          strokeOpacity: 0.7,
+          strokeStyle: "solid",
+        });
+      }
+
+      setTimeout(() => map && map.relayout(), 0);
+    })();
+  }, [stop, activeRoute]);
+
+  // 이 정류장의 운행중 시간대
   const activeTimes = useMemo(() => {
     const set = new Set();
     vehicles.forEach((v) => {
-      if (String(v.stopId) === String(id) && isActiveNow(v) && v.time) {
+      if (
+        String(v.stopId) === String(id) &&
+        isActiveNow(v) &&
+        v.time
+      ) {
         set.add(String(v.time).trim());
       }
     });
@@ -668,7 +779,9 @@ const StopDetail = () => {
               <button
                 key={t}
                 className="bus-item"
-                onClick={() => nav(`/stop/${id}/live/${encodeURIComponent(t)}`)}
+                onClick={() =>
+                  nav(`/stop/${id}/live/${encodeURIComponent(t)}`)
+                }
                 style={{ textAlign: "left" }}
               >
                 <div className="bus-item-content">
@@ -686,13 +799,15 @@ const StopDetail = () => {
   );
 };
 
-/********************** 라이브 화면 (노선 + 버스 위치 + ETA + 대기) **********************/
+/********************** 라이브 화면 (노선 + 버스 위치 + ETA) **********************/
 const TimeLiveScreen = () => {
-  const { id, time } = useParams(); // stopId, HH:MM
+  const { id, time } = useParams();
   const { stops, vehicles, routes } = useApp();
   const [search] = useSearchParams();
   const speedKmh =
-    Number(search.get("speedKmh")) > 0 ? Number(search.get("speedKmh")) : 18;
+    Number(search.get("speedKmh")) > 0
+      ? Number(search.get("speedKmh"))
+      : 18;
 
   const stop = useMemo(
     () => stops.find((s) => String(s.id) === String(id)),
@@ -703,230 +818,82 @@ const TimeLiveScreen = () => {
   const mapEl = useRef(null);
   const overlays = useRef([]);
 
-  // 대기 토큰 로컬 보관
-  const [waitToken, setWaitToken] = useState(() => {
-    try {
-      return localStorage.getItem("everybus:waitToken") || null;
-    } catch {
-      return null;
-    }
-  });
-  const [waitStatus, setWaitStatus] = useState(null); // { busId, seatsLeft, capacity, waiting }
-
-  // 이 정류장+시간 기준 운행중 버스: 우선 time 일치, 없으면 stopId만 일치
   const actives = useMemo(() => {
-    const base = vehicles.filter(
-      (v) => String(v.stopId) === String(id) && isActiveNow(v)
-    );
     const t = String(time || "").trim();
-    if (!t) return base;
-    const exact = base.filter(
-      (v) => String(v.time || "").trim() === t
+    return vehicles.filter(
+      (v) =>
+        String(v.stopId) === String(id) &&
+        isActiveNow(v) &&
+        String(v.time || "").trim() === t
     );
-    return exact.length > 0 ? exact : base;
   }, [vehicles, id, time]);
 
-  // 가장 가까운 버스
   const nearestBus = useMemo(() => {
     if (!actives.length || !stops.length) return null;
     const s = stops.find((x) => String(x.id) === String(id));
     if (!s) return null;
     const withDist = actives
-      .filter((v) => Number.isFinite(v.lat) && Number.isFinite(v.lng))
+      .filter(
+        (v) =>
+          Number.isFinite(v.lat) &&
+          Number.isFinite(v.lng)
+      )
       .map((v) => ({
         v,
-        d: haversineMeters({ lat: v.lat, lng: v.lng }, { lat: s.lat, lng: s.lng }),
+        d: haversineMeters(
+          { lat: v.lat, lng: v.lng },
+          { lat: s.lat, lng: s.lng }
+        ),
       }));
     if (!withDist.length) return null;
     return withDist.sort((a, b) => a.d - b.d)[0].v;
   }, [actives, stops, id]);
 
-  // ETA
   const etaText = useMemo(() => {
     if (!stop || actives.length === 0) return "정보 없음";
     const withDist = actives
-      .filter((v) => Number.isFinite(v.lat) && Number.isFinite(v.lng))
+      .filter(
+        (v) =>
+          Number.isFinite(v.lat) &&
+          Number.isFinite(v.lng)
+      )
       .map((v) => ({
         v,
-        d: haversineMeters({ lat: v.lat, lng: v.lng }, { lat: stop.lat, lng: stop.lng }),
+        d: haversineMeters(
+          { lat: v.lat, lng: v.lng },
+          { lat: stop.lat, lng: stop.lng }
+        ),
       }));
     if (!withDist.length) return "정보 없음";
-    const nearest = withDist.sort((a, b) => a.d - b.d)[0];
+    const nearest = withDist.sort(
+      (a, b) => a.d - b.d
+    )[0];
     const mps = (speedKmh * 1000) / 3600;
-    const mins = Math.max(1, Math.round(nearest.d / mps / 60));
+    const mins = Math.max(
+      1,
+      Math.round(nearest.d / mps / 60)
+    );
     return `${mins}분 후 도착 예정`;
   }, [actives, stop, speedKmh]);
 
-  // 노선 선택 (이름 루즈 매칭)
-  const normalize = (s) => (s || "").replace(/\s+/g, "").toLowerCase();
   const activeRoute = useMemo(() => {
     if (!routes || !routes.length || !stop) return null;
-    const stopName = normalize(stop.name);
-    const cands = routes.filter((r) => r.points && r.points.length > 1);
-    if (!cands.length) return null;
 
-    if (stopName.includes("안산대1")) {
-      return (
-        cands.find((r) => normalize(r.name).includes("안산대1")) ||
-        cands.find(
-          (r) =>
-            normalize(r.name).includes("상록수") &&
-            normalize(r.name).includes("안산대")
-        ) ||
-        null
-      );
+    const name = stop.name || "";
+    let targetName = null;
+
+    if (name.includes("안산대1") || name.includes("안산대 1")) {
+      targetName = "상록수-안산대 1";
+    } else if (name.includes("안산대2") || name.includes("안산대 2")) {
+      targetName = "상록수-안산대 2";
+    } else if (name.includes("상록수")) {
+      targetName = "상록수-안산대 1";
     }
-    if (stopName.includes("안산대2")) {
-      return (
-        cands.find((r) => normalize(r.name).includes("안산대2")) ||
-        cands.find(
-          (r) =>
-            normalize(r.name).includes("상록수") &&
-            normalize(r.name).includes("안산대")
-        ) ||
-        null
-      );
-    }
-    if (stopName.includes("상록수")) {
-      return cands.find((r) => normalize(r.name).includes("상록수")) || cands[0] || null;
-    }
-    return cands[0] || null;
+
+    if (!targetName) return null;
+    return routes.find((r) => r.name === targetName) || null;
   }, [routes, stop]);
 
-  // 대기 등록
-  const requestWait = async (bus) => {
-    try {
-      const base = await getServerURL();
-      const res = await fetch(`${base}/wait`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          busId: String(bus.id),
-          stopId: String(id),
-          time: String(time || "").trim(),
-        }),
-      }).catch(() => null);
-
-      if (!res || !res.ok) {
-        // 서버 없으면 그냥 프론트에서만 토큰 흉내
-        const fakeToken = `local-${Date.now()}`;
-        setWaitToken(fakeToken);
-        setWaitStatus({
-          busId: String(bus.id),
-          waiting: (waitStatus?.waiting || 0) + 1,
-          capacity: bus.capacity || 45,
-          seatsLeft: (bus.capacity || 45) - ((waitStatus?.waiting || 0) + 1),
-        });
-        try {
-          localStorage.setItem("everybus:waitToken", fakeToken);
-        } catch {}
-        alert("대기 등록 (임시 클라이언트) 완료");
-        return;
-      }
-
-      const data = await res.json().catch(() => null);
-      if (!data) {
-        alert("대기 등록 실패");
-        return;
-      }
-      if (data.full) {
-        alert("이미 만석인 버스입니다.");
-        return;
-      }
-      if (data.ok && data.token) {
-        setWaitToken(data.token);
-        setWaitStatus({
-          busId: String(bus.id),
-          seatsLeft: data.seatsLeft,
-          capacity: data.capacity,
-          waiting: data.waiting,
-        });
-        try {
-          localStorage.setItem("everybus:waitToken", data.token);
-        } catch {}
-        alert("대기 등록이 완료되었습니다.");
-      } else {
-        alert("대기 등록 실패");
-      }
-    } catch (e) {
-      console.error(e);
-      alert("대기 등록 중 오류가 발생했습니다.");
-    }
-  };
-
-  // 대기 취소
-  const cancelWait = async () => {
-    if (!waitToken) return;
-    try {
-      const base = await getServerURL();
-      await fetch(`${base}/wait/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: waitToken }),
-      }).catch(() => null);
-    } catch (e) {
-      console.error(e);
-    }
-    setWaitToken(null);
-    setWaitStatus(null);
-    try {
-      localStorage.removeItem("everybus:waitToken");
-    } catch {}
-  };
-
-  // 좌석/대기 정보 폴링 (백엔드 있으면 사용, 없으면 무시)
-  useEffect(() => {
-    if (!actives.length) return;
-    let stopped = false;
-    const targetBusId =
-      waitStatus?.busId || (actives[0] && actives[0].id);
-
-    const poll = async () => {
-      if (!targetBusId) return;
-      try {
-        const base = await getServerURL();
-        const url = `${base}/wait/summary?busId=${encodeURIComponent(
-          targetBusId
-        )}&stopId=${encodeURIComponent(id)}&time=${encodeURIComponent(
-          String(time || "").trim()
-        )}`;
-        const res = await fetch(url).catch(() => null);
-        if (!res || !res.ok) return;
-        const data = await res.json().catch(() => null);
-        if (!data || !data.ok) return;
-
-        setWaitStatus((prev) => ({
-          ...(prev || {}),
-          busId: String(targetBusId),
-          waiting: data.waiting,
-          capacity: data.capacity,
-          seatsLeft: data.seatsLeft,
-        }));
-
-        if (waitToken && data.full) {
-          try {
-            localStorage.removeItem("everybus:waitToken");
-          } catch {}
-          setWaitToken(null);
-          alert("버스 좌석이 가득 차 대기가 자동 해제되었습니다.");
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    };
-
-    poll();
-    const iv = setInterval(() => {
-      if (!stopped) poll();
-    }, 7000);
-
-    return () => {
-      stopped = true;
-      clearInterval(iv);
-    };
-  }, [actives, id, time, waitToken, waitStatus?.busId]);
-
-  // 지도: 노선 + 노선 위 버스만 표시
   useEffect(() => {
     (async () => {
       await loadKakaoMaps();
@@ -934,21 +901,28 @@ const TimeLiveScreen = () => {
       const kakao = window.kakao;
 
       const center =
-        nearestBus && Number.isFinite(nearestBus.lat) && Number.isFinite(nearestBus.lng)
+        nearestBus &&
+        Number.isFinite(nearestBus.lat) &&
+        Number.isFinite(nearestBus.lng)
           ? new kakao.maps.LatLng(nearestBus.lat, nearestBus.lng)
           : new kakao.maps.LatLng(stop.lat, stop.lng);
 
-      const map = new kakao.maps.Map(mapEl.current, { center, level: 4 });
+      const map = new kakao.maps.Map(mapEl.current, {
+        center,
+        level: 4,
+      });
       mapRef.current = map;
 
-      // 정류장 마커
       new kakao.maps.Marker({
         position: new kakao.maps.LatLng(stop.lat, stop.lng),
         map,
       });
 
-      // 노선 폴리라인
-      if (activeRoute && activeRoute.points.length > 1) {
+      if (
+        activeRoute &&
+        activeRoute.points &&
+        activeRoute.points.length > 1
+      ) {
         const path = activeRoute.points.map(
           (p) => new kakao.maps.LatLng(p.lat, p.lng)
         );
@@ -962,23 +936,22 @@ const TimeLiveScreen = () => {
         });
       }
 
-      // 기존 오버레이 제거
       overlays.current.forEach((o) => o.setMap(null));
       overlays.current = [];
-
-      // 노선 위 버스만 표시
       actives.forEach((v) => {
-        if (!Number.isFinite(v.lat) || !Number.isFinite(v.lng)) return;
-        if (!isBusOnRoute(v, activeRoute, 200)) return;
-
+        if (
+          !Number.isFinite(v.lat) ||
+          !Number.isFinite(v.lng)
+        )
+          return;
         const overlay = new kakao.maps.CustomOverlay({
           position: new kakao.maps.LatLng(v.lat, v.lng),
-          content: `<div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-50%);cursor:pointer;">
-              <div style="font-size:22px;filter:drop-shadow(0 0 2px rgba(0,0,0,.5));">🚌</div>
-              <div style="font-size:10px;font-weight:bold;line-height:1;margin-top:2px;">${
-                v.route || "셔틀"
-              }</div>
-            </div>`,
+          content: `<div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-50%);">
+                <div style="font-size:22px;filter:drop-shadow(0 0 2px rgba(0,0,0,.5));">🚌</div>
+                <div style="font-size:10px;font-weight:bold;line-height:1;margin-top:2px;">${
+                  v.route || "셔틀"
+                }</div>
+              </div>`,
           yAnchor: 0.5,
           xAnchor: 0.5,
         });
@@ -1008,74 +981,8 @@ const TimeLiveScreen = () => {
         <div className="card-subtitle">예상 도착</div>
         <div style={{ fontWeight: 700, fontSize: "1rem" }}>{etaText}</div>
         <div className="info-text" style={{ marginTop: 6 }}>
-          (기본 속도 {speedKmh}km/h 기준 • URL에 <code>?speedKmh=20</code> 으로 조정 가능)
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-subtitle">운행 중 버스 / 좌석 정보</div>
-        {actives.length === 0 ? (
-          <div className="info-text">
-            현재 이 시간/정류장에 운행 중인 버스가 없습니다.
-          </div>
-        ) : (
-          <div className="bus-list">
-            {actives.map((b) => {
-              const isMine =
-                waitStatus?.busId &&
-                String(waitStatus.busId) === String(b.id);
-
-              const capacity =
-                (isMine &&
-                  waitStatus &&
-                  waitStatus.capacity != null &&
-                  waitStatus.capacity) ||
-                b.capacity ||
-                45;
-
-              const seatsLeft =
-                isMine &&
-                waitStatus &&
-                waitStatus.seatsLeft != null
-                  ? waitStatus.seatsLeft
-                  : undefined;
-
-              return (
-                <div key={b.id} className="bus-item">
-                  <div className="bus-item-content">
-                    <div>
-                      <div className="bus-item-name">
-                        {b.route || "셔틀"} ({b.id})
-                      </div>
-                      <div className="info-text">
-                        좌석 {capacity}석
-                        {seatsLeft != null &&
-                          ` • 남은좌석 ${seatsLeft}석`}
-                      </div>
-                    </div>
-                    {waitToken && isMine ? (
-                      <button
-                        className="button-small danger"
-                        onClick={cancelWait}
-                      >
-                        대기 취소
-                      </button>
-                    ) : (
-                      <button
-                        className="button-small primary"
-                        onClick={() => requestWait(b)}
-                      >
-                        대기
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <div className="info-text" style={{ marginTop: 4 }}>
-          * 대기/좌석 수는 서버 구현 여부에 따라 실제 값 또는 기본값(45석)으로 표시됩니다.
+          (기본 속도 {speedKmh}km/h 기준 계산 • URL에{" "}
+          <code>?speedKmh=20</code> 처럼 전달하면 변경 가능)
         </div>
       </div>
     </Page>
@@ -1098,7 +1005,6 @@ export default function App() {
   });
   const [visibleVehicleIds, setVisibleVehicleIds] = useState([]);
   const [userLocation, setUserLocation] = useState(null);
-
   const [alerts, setAlerts] = useState([]);
   const [toasts, setToasts] = useState([]);
 
@@ -1131,6 +1037,27 @@ export default function App() {
 
   useUserLocation(setUserLocation);
 
+  // 정류장 공통 로드
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const data = await fetchStopsOnce();
+      if (!alive) return;
+      const favSet = new Set([...favIds].map(String));
+      setStops(
+        data.map((s) => ({
+          ...s,
+          favorite: favSet.has(String(s.id)),
+        }))
+      );
+    })();
+    return () => {
+      alive = false;
+    };
+    // favIds 바뀌면 favorite 표시만 다시 맞춰지도록
+  }, [favIds]);
+
+  // 차량 폴링
   useEffect(() => {
     let alive = true;
     const run = async () => {
@@ -1145,6 +1072,7 @@ export default function App() {
     };
   }, []);
 
+  // 노선 로드
   useEffect(() => {
     let alive = true;
     (async () => {
