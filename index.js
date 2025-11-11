@@ -369,10 +369,37 @@ app.put("/bus/active", async (req, res) => {
       active,
       serviceWindow,
     } = req.body || {};
-    if (!id || !stopId || !time) {
+
+    // 1) id는 항상 필요
+    if (!id) {
+      return res.status(400).json({ error: "id 필수" });
+    }
+
+    // 2) 운행 종료 요청 (active === false)
+    if (active === false) {
+      const doc = await ActiveBus.findOneAndUpdate(
+        { id: String(id) },
+        {
+          $set: {
+            active: false,
+            updatedAt: new Date(),
+          },
+        },
+        { new: true }
+      );
+
+      return res.json({
+        ok: true,
+        id: doc ? doc.id : String(id),
+        stopped: true,
+      });
+    }
+
+    // 3) 운행 시작/갱신: 이 경우에만 stopId, time 필수
+    if (!stopId || !time) {
       return res
         .status(400)
-        .json({ error: "id, stopId, time 필수" });
+        .json({ error: "stopId, time 필수 (active=true일 때)" });
     }
 
     const doc = await ActiveBus.findOneAndUpdate(
@@ -383,19 +410,21 @@ app.put("/bus/active", async (req, res) => {
           time: String(time),
           driver: driver ?? null,
           route: route ?? null,
-          active: active !== false,
+          active: true,
           serviceWindow: serviceWindow || null,
           updatedAt: new Date(),
         },
       },
       { new: true, upsert: true }
     );
-    res.json({ ok: true, id: doc.id });
+
+    return res.json({ ok: true, id: doc.id });
   } catch (e) {
     console.error("❌ /bus/active PUT:", e);
-    res.status(500).json({ error: "active 업서트 실패" });
+    return res.status(500).json({ error: "active 업서트 실패" });
   }
 });
+
 
 // 호환용 시작
 app.post("/bus/active/start", async (req, res) => {
