@@ -223,8 +223,7 @@ app.get("/vehicles", async (_req, res) => {
     const uniqIds = [...new Set(rawIds)];
 
     const labelMap = {
-      "ansan-line-1": "1호차",
-      "ansan-line-2": "2호차",
+     
       "상록수역→대학": "셔틀A",
       "대학→상록수역": "셔틀B",
     };
