@@ -206,6 +206,8 @@ app.get("/stops", async (_req, res) => {
 });
 
 /* ---------------------- 차량 위치 ---------------------- */
+
+// GET: 사용자용 현재 차량 위치
 app.get("/bus/location", async (_req, res) => {
   try {
     const query = filterByAllowedBusIds({
@@ -226,6 +228,7 @@ app.get("/bus/location", async (_req, res) => {
   }
 });
 
+// POST: GPS 디바이스/기사앱에서 위치 업로드
 app.post("/bus/location/:imei", async (req, res) => {
   const { imei } = req.params;
   const { lat, lng, heading } = req.body || {};
@@ -259,10 +262,11 @@ app.post("/bus/location/:imei", async (req, res) => {
 /* ---------------------- /vehicles (기사앱용 선택 목록) ---------------------- */
 app.get("/vehicles", async (_req, res) => {
   try {
-    // 1순위: Vehicle 컬렉션 기준 (ALLOWED_BUS_IDS 있으면 해당 ID만)
-    const vQuery = ALLOWED_BUS_IDS && ALLOWED_BUS_IDS.length
-      ? { id: { $in: ALLOWED_BUS_IDS } }
-      : {};
+    const vQuery =
+      ALLOWED_BUS_IDS && ALLOWED_BUS_IDS.length
+        ? { id: { $in: ALLOWED_BUS_IDS } }
+        : {};
+
     let list = await Vehicle.find(vQuery)
       .select("id route -_id")
       .lean();
@@ -274,7 +278,7 @@ app.get("/vehicles", async (_req, res) => {
         label: v.route ? String(v.route) : String(v.id),
       }));
 
-    // 2순위: Vehicle 비어있으면 timebus 기반 fallback (기존 로직 유지)
+    // Vehicle 비어있으면 timebus 기반 fallback
     if (!list.length) {
       const docs = await Timebus.find({})
         .select("routeId direction -_id")
@@ -314,9 +318,7 @@ app.get("/timebus", async (req, res) => {
     if (origin) q.origin = origin;
     if (destination) q.destination = destination;
 
-    const rows = await Timebus.find(
-      Object.keys(q).length ? q : {}
-    ).lean();
+    const rows = await Timebus.find(Object.keys(q).length ? q : {}).lean();
 
     const normalized = rows.map((d) => ({
       routeId: d.routeId,
@@ -339,25 +341,35 @@ app.get("/timebus", async (req, res) => {
 });
 
 /* ---------------------- /bus/active (운행중 메타) ---------------------- */
-// GET: 사용자앱에서 사용
-app.get("/bus/location", async (_req, res) => {
+
+/**
+ * GET /bus/active
+ * - 사용자 앱에서 사용
+ * - 최근 ACTIVE_MS 안에 업데이트된 active=true 레코드만 반환
+ */
+app.get("/bus/active", async (_req, res) => {
   try {
-    const vehicles = await Vehicle.find({
-      lat: { $ne: null },
-      lng: { $ne: null },
-      id: { $ne: "ansan-line-1" }, // 더미 제거
-    })
-      .select("id route lat lng heading updatedAt -_id")
-      .lean();
-    res.json(vehicles);
+    const now = Date.now();
+    const ACTIVE_MS = 30 * 60 * 1000; // 30분
+
+    const q = {
+      active: true,
+      updatedAt: { $gte: new Date(now - ACTIVE_MS) },
+    };
+
+    if (ALLOWED_BUS_IDS && ALLOWED_BUS_IDS.length) {
+      q.id = { $in: ALLOWED_BUS_IDS };
+    }
+
+    const list = await ActiveBus.find(q).lean();
+    res.json(list);
   } catch (e) {
-    console.error("❌ /bus/location:", e);
-    res.status(500).json({ error: "버스 위치를 조회할 수 없습니다." });
+    console.error("❌ /bus/active GET:", e);
+    res.status(500).json({ error: "active 조회 실패" });
   }
 });
 
-
-// PUT: 기사앱 업서트
+// PUT /bus/active : 기사앱 업서트 (시작/갱신/종료)
 app.put("/bus/active", async (req, res) => {
   try {
     const {
@@ -370,12 +382,12 @@ app.put("/bus/active", async (req, res) => {
       serviceWindow,
     } = req.body || {};
 
-    // 1) id는 항상 필요
+    // id는 항상 필요
     if (!id) {
       return res.status(400).json({ error: "id 필수" });
     }
 
-    // 2) 운행 종료 요청 (active === false)
+    // 운행 종료 요청(active === false)
     if (active === false) {
       const doc = await ActiveBus.findOneAndUpdate(
         { id: String(id) },
@@ -395,7 +407,7 @@ app.put("/bus/active", async (req, res) => {
       });
     }
 
-    // 3) 운행 시작/갱신: 이 경우에만 stopId, time 필수
+    // 운행 시작/갱신: stopId, time 필수
     if (!stopId || !time) {
       return res
         .status(400)
@@ -424,7 +436,6 @@ app.put("/bus/active", async (req, res) => {
     return res.status(500).json({ error: "active 업서트 실패" });
   }
 });
-
 
 // 호환용 시작
 app.post("/bus/active/start", async (req, res) => {
