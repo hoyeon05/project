@@ -1,6 +1,7 @@
 // App.js — EveryBus React UI (운행중 시간대 선택 → 라이브 화면 + ETA, GPS 콘솔 1회, 헤더 고정)
 import React, { useEffect, useRef, useState, createContext, useContext, useMemo } from "react";
 import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
+import RouteEditor from "./RouteEditor";
 import "./App.css";
 
 /********************** 환경값 **********************/
@@ -732,7 +733,6 @@ export default function App() {
     <Route path="/stop/:id" element={<StopDetail />} />
     <Route path="/stop/:id/live/:time" element={<TimeLiveScreen />} />
 
-    
     <Route path="/route-editor" element={<RouteEditor />} />
 
     <Route
