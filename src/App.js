@@ -17,7 +17,8 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { QrReader } from "react-qr-reader";
+import { QrScanner } from "@yudiel/react-qr-scanner";
+
 import "./App.css";
 
 /********************** 환경값 **********************/
@@ -798,27 +799,23 @@ const StopDetail = () => {
 };
 
 /********************** QR 체크인 **********************/
+/********************** QR 체크인 **********************/
 const QrCheckScreen = () => {
   const { addNotice } = useApp();
   const [lastCode, setLastCode] = useState("");
   const [status, setStatus] = useState("READY"); // READY | SENDING | DONE | ERROR
 
-  const handleResult = async (result, error) => {
-    if (error) {
-      // 콘솔만 조용히
-      return;
-    }
-    if (!result) return;
-
-    const text = result?.text || String(result);
-    if (!text || text === lastCode || status === "SENDING") return;
+  const handleDecode = async (text) => {
+    if (!text) return;
+    if (text === lastCode && status === "DONE") return;
+    if (status === "SENDING") return;
 
     setLastCode(text);
     setStatus("SENDING");
 
     try {
       const base = await getServerURL();
-      // 백엔드에 QR 체크인 기록 전송 (엔드포인트 있으면 사용, 없어도 앱은 안죽음)
+      // 서버에 체크인 기록 전송 (엔드포인트 없으면 실패해도 무시)
       await fetch(`${base}/qr/checkin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -847,8 +844,9 @@ const QrCheckScreen = () => {
       </div>
 
       <div className="qr-wrap" style={{ marginTop: 16 }}>
-        <QrReader
-          onResult={handleResult}
+        <QrScanner
+          onDecode={handleDecode}
+          onError={(err) => console.warn("[QR] error", err)}
           constraints={{ facingMode: "environment" }}
           containerStyle={{ width: "100%" }}
           videoStyle={{ width: "100%" }}
@@ -865,12 +863,12 @@ const QrCheckScreen = () => {
             <div className="info-text" style={{ marginTop: 6 }}>
               상태:{" "}
               {status === "DONE"
-                ? "서버 전송 완료 (또는 로컬 처리 완료)"
+                ? "체크인 처리 완료"
                 : status === "SENDING"
                 ? "서버 전송 중..."
                 : status === "ERROR"
                 ? "전송 실패 (QR은 인식됨)"
-                : "인식 완료"}
+                : "인식 대기 중"}
             </div>
           </>
         ) : (
@@ -880,6 +878,7 @@ const QrCheckScreen = () => {
     </Page>
   );
 };
+
 
 /********************** 라이브 화면 (노선 + 버스 위치 + ETA) **********************/
 const TimeLiveScreen = () => {
