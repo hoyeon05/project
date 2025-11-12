@@ -1,17 +1,20 @@
-// DriverApp.js — EveryBus 기사님용 (Render 서버 연동 + 좌석 실시간 표시)
+// DriverApp.js — EveryBus 기사님용 (Render 서버 연동 + 좌석 실시간 표시 + 안정화)
 // 서버: https://project-1-ek9j.onrender.com
-// 기능: 운행 시작/종료, 실시간 위치 전송, 탑승자 수/남은 좌석 확인, QR코드 발급
-// 변경점:
-//  - /bus/active 를 주기적으로 조회해서 현재 탑승 인원(onboard)과 남은 좌석(capacity - onboard)를 표시
+// 기능: 운행 시작/종료, 실시간 위치 전송, 탑승 인원/남은 좌석 표시, QR 발급
+// 보강:
+//  - 서버 자동 선택(getBase) 캐시 + 헬스체크
+//  - 폴링 타이머 메모리릭 방지(클린업 확실히)
+//  - 탭 비활성화 시 폴링 일시중지(배터리 절약)
+//  - 예외/네트워크 처리, 좌석 파싱 안전화
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
 const PROD_SERVER_URL = "https://project-1-ek9j.onrender.com";
 const LOCAL_SERVER_URL = "http://localhost:5000";
 
-const GPS_POLL_MS = 8000;            // 위치 갱신 주기
-const PASSENGER_POLL_MS = 5000;      // 탑승 인원 갱신 주기
+const GPS_POLL_MS = 8000;         // 위치 갱신 주기
+const PASSENGER_POLL_MS = 5000;   // 탑승 인원 갱신 주기
 const SERVICE_WINDOW_MINUTES = 120;
 
 let cachedBase = null;
@@ -19,28 +22,23 @@ async function getBase() {
   if (cachedBase) return cachedBase;
   for (const b of [PROD_SERVER_URL, LOCAL_SERVER_URL]) {
     try {
-      const r = await fetch(`${b}/health`);
+      const r = await fetch(`${b}/health`, { cache: "no-store" });
       if (r.ok) {
         cachedBase = b;
         console.log(`✅ 연결된 서버: ${b}`);
         return b;
       }
-    } catch (e) {
-      // ignore
-    }
+    } catch {}
   }
   cachedBase = PROD_SERVER_URL;
   return cachedBase;
 }
 
-// /bus/active 응답에서 좌석 정보 가져오기 유틸
+// /bus/active 응답에서 좌석 정보 가져오기
 function extractSeatInfo(raw, busId) {
   if (!raw) return null;
   const list = Array.isArray(raw) ? raw : [raw];
-
-  const item = list.find(
-    (v) => v && String(v.id) === String(busId)
-  );
+  const item = list.find((v) => v && String(v.id) === String(busId));
   if (!item) return null;
 
   const capacity = Number(
@@ -48,7 +46,7 @@ function extractSeatInfo(raw, busId) {
       item.seatCapacity ??
       item.maxSeats ??
       item.totalSeats ??
-      24 // 기본 좌석 수. 서버에서 capacity 내려주면 이건 무시됨
+      24 // 서버에서 주면 얘는 무시됨
   );
   const onboard = Number(
     item.onboard ??
@@ -58,14 +56,18 @@ function extractSeatInfo(raw, busId) {
   );
 
   if (!Number.isFinite(capacity) || capacity <= 0) return null;
-
   const safeOnboard = Number.isFinite(onboard) && onboard >= 0 ? onboard : 0;
   const left = Math.max(0, capacity - safeOnboard);
-
   return { capacity, onboard: safeOnboard, left };
 }
 
+// 배터리 절약: 탭이 숨겨졌을 때 true
+function isPageHidden() {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
 export default function DriverApp() {
+  // 선택 상태
   const [busId, setBusId] = useState("");
   const [driver, setDriver] = useState("");
   const [stopName, setStopName] = useState("");
@@ -74,50 +76,51 @@ export default function DriverApp() {
 
   const [isDriving, setIsDriving] = useState(false);
 
-  // 좌석 정보 상태
+  // 좌석 상태
   const [capacity, setCapacity] = useState(null);
   const [onboard, setOnboard] = useState(0);
 
-  const [showQR, setShowQR] = useState(false);
-
-  // 선택 가능한 버스, 정류장 목록
+  // 선택 목록
   const [busOptions, setBusOptions] = useState([]);
   const [stops, setStops] = useState([]);
-
   const driverOptions = ["김기사", "박기사", "이기사", "최기사"];
 
-  /* 🚌 서버에서 차량 / 정류장 불러오기
-     1순위: /vehicles -> {id,label}
-     2순위: /bus/location -> id 목록 (label=id)
-  */
+  const [showQR, setShowQR] = useState(false);
+  const [qrUrl, setQrUrl] = useState("");
+
+  // 타이머/컨트롤러 레퍼런스
+  const gpsTimerRef = useRef(null);
+  const paxTimerRef = useRef(null);
+
+  /* 초기: 서버에서 차량/정류장 불러오기 */
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       const base = await getBase();
 
-      // 1) /vehicles 시도
+      // 차량 목록
       let vehicles = [];
       try {
-        const r = await fetch(`${base}/vehicles`);
+        const r = await fetch(`${base}/vehicles`, { cache: "no-store" });
         if (r.ok) {
           const data = await r.json();
-          if (Array.isArray(data) && data.length > 0) {
+          if (Array.isArray(data) && data.length) {
             vehicles = data
               .map((v) => ({
                 id: String(v.id),
                 label: v.label ? String(v.label) : String(v.id),
               }))
               .filter((v) => v.id);
-            console.log("🚍 vehicles(from /vehicles):", vehicles);
           }
         }
       } catch (e) {
         console.warn("❌ /vehicles 오류:", e);
       }
 
-      // 2) 비어 있으면 /bus/location 기반 폴백
+      // 폴백: /bus/location
       if (!vehicles.length) {
         try {
-          const r2 = await fetch(`${base}/bus/location`);
+          const r2 = await fetch(`${base}/bus/location`, { cache: "no-store" });
           if (r2.ok) {
             const arr = await r2.json();
             const uniqIds = Array.from(
@@ -127,61 +130,78 @@ export default function DriverApp() {
                   .filter(Boolean)
               )
             );
-            vehicles = uniqIds.map((id) => ({
-              id,
-              label: id,
-            }));
-            console.log("🚍 vehicles(from /bus/location fallback):", vehicles);
+            vehicles = uniqIds.map((id) => ({ id, label: id }));
           }
         } catch (e) {
           console.warn("❌ /bus/location 오류:", e);
         }
       }
 
-      setBusOptions(vehicles);
+      if (!cancelled) setBusOptions(vehicles);
 
       // 정류장 목록
       try {
-        const r = await fetch(`${base}/stops`);
+        const r = await fetch(`${base}/stops`, { cache: "no-store" });
         if (r.ok) {
           const arr = await r.json();
-          setStops(Array.isArray(arr) ? arr : []);
+          if (!cancelled) setStops(Array.isArray(arr) ? arr : []);
         }
       } catch (e) {
         console.warn("❌ /stops 오류:", e);
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // 정류장 이름 -> id 매핑
+  // 정류장 이름 -> id 맵
   const stopIdByName = useMemo(() => {
     const m = new Map();
     stops.forEach((s) => m.set(s.name, String(s.id)));
     return m;
   }, [stops]);
 
-  /* 🛰️ GPS 자동 전송: 운행 중 + busId 선택 시에만 */
+  /* GPS 자동 전송: 운행 중 & busId 선택 & 탭 활성화일 때 */
   useEffect(() => {
-    if (!isDriving || !busId) return;
-    let timer;
+    // 클린업 함수
+    const clear = () => {
+      if (gpsTimerRef.current) {
+        clearTimeout(gpsTimerRef.current);
+        gpsTimerRef.current = null;
+      }
+    };
+    clear();
 
-    const loop = async () => {
+    if (!isDriving || !busId) return;
+
+    const tick = async () => {
+      // 탭 비활성화면 잠깐 쉼(배터리 절약)
+      if (isPageHidden()) {
+        gpsTimerRef.current = setTimeout(tick, GPS_POLL_MS);
+        return;
+      }
+
       if (!navigator.geolocation) {
         console.warn("이 기기는 위치 정보를 지원하지 않습니다.");
+        gpsTimerRef.current = setTimeout(tick, GPS_POLL_MS);
         return;
       }
 
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
-          const base = await getBase();
           try {
+            const base = await getBase();
             await fetch(`${base}/bus/location/${busId}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 lat: pos.coords.latitude,
                 lng: pos.coords.longitude,
-                heading: 0,
+                heading: Number.isFinite(pos.coords.heading)
+                  ? pos.coords.heading
+                  : 0,
               }),
             });
             console.log(
@@ -189,51 +209,81 @@ export default function DriverApp() {
             );
           } catch (err) {
             console.warn("❌ 위치 전송 실패", err);
+          } finally {
+            gpsTimerRef.current = setTimeout(tick, GPS_POLL_MS);
           }
         },
         (err) => {
           console.warn("❌ 위치 가져오기 실패", err);
-        }
+          gpsTimerRef.current = setTimeout(tick, GPS_POLL_MS);
+        },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
       );
-
-      timer = setTimeout(loop, GPS_POLL_MS);
     };
 
-    loop();
-    return () => clearTimeout(timer);
+    tick();
+    // 탭 가시성 변경 시 즉시 재평가
+    const visHandler = () => {
+      clear();
+      gpsTimerRef.current = setTimeout(tick, 200);
+    };
+    document.addEventListener("visibilitychange", visHandler);
+
+    return () => {
+      clear();
+      document.removeEventListener("visibilitychange", visHandler);
+    };
   }, [isDriving, busId]);
 
-  /* 🧍‍♀️🧍‍♂️ 탑승 인원/남은 좌석: 운행 중일 때 /bus/active 주기 조회 */
+  /* 탑승 인원/남은 좌석: 운행 중일 때 /bus/active 폴링 */
   useEffect(() => {
+    const clear = () => {
+      if (paxTimerRef.current) {
+        clearTimeout(paxTimerRef.current);
+        paxTimerRef.current = null;
+      }
+    };
+    clear();
+
     if (!isDriving || !busId) {
       setOnboard(0);
-      // capacity는 그대로 두거나 초기화. 여기서는 유지.
       return;
     }
 
-    let timer;
-
-    const pollPassengers = async () => {
+    const poll = async () => {
+      if (isPageHidden()) {
+        paxTimerRef.current = setTimeout(poll, PASSENGER_POLL_MS);
+        return;
+      }
       try {
         const base = await getBase();
-        const r = await fetch(`${base}/bus/active`);
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const data = await r.json();
-
-        const seat = extractSeatInfo(data, busId);
-        if (seat) {
-          setCapacity(seat.capacity);
-          setOnboard(seat.onboard);
+        const r = await fetch(`${base}/bus/active`, { cache: "no-store" });
+        if (r.ok) {
+          const data = await r.json();
+          const seat = extractSeatInfo(data, busId);
+          if (seat) {
+            setCapacity(seat.capacity);
+            setOnboard(seat.onboard);
+          }
         }
       } catch (e) {
         console.warn("❌ 탑승 인원 조회 실패", e);
+      } finally {
+        paxTimerRef.current = setTimeout(poll, PASSENGER_POLL_MS);
       }
-
-      timer = setTimeout(pollPassengers, PASSENGER_POLL_MS);
     };
 
-    pollPassengers();
-    return () => clearTimeout(timer);
+    poll();
+    const visHandler = () => {
+      clear();
+      paxTimerRef.current = setTimeout(poll, 200);
+    };
+    document.addEventListener("visibilitychange", visHandler);
+
+    return () => {
+      clear();
+      document.removeEventListener("visibilitychange", visHandler);
+    };
   }, [isDriving, busId]);
 
   async function sendActiveToServer(payload) {
@@ -252,23 +302,16 @@ export default function DriverApp() {
     }
   }
 
-  /* 🚦 운행 시작 / 종료 */
+  /* 운행 시작/종료 */
   const handleToggle = async () => {
-    // 운행 종료
     if (isDriving) {
       if (!window.confirm("운행을 종료하시겠습니까?")) return;
-      await sendActiveToServer({
-        id: busId,
-        active: false,
-      });
+      await sendActiveToServer({ id: busId, active: false });
       setIsDriving(false);
       setShowQR(false);
-      // 종료 시 탑승 인원 표시 초기화(원하면 유지해도 됨)
-      // setOnboard(0);
       return;
     }
 
-    // 운행 시작
     if (!busId || !driver || !stopName || !time) {
       alert("버스, 기사, 정류장, 시간을 모두 입력해주세요.");
       return;
@@ -276,9 +319,7 @@ export default function DriverApp() {
 
     const now = Date.now();
     const start = new Date(now).toISOString();
-    const end = new Date(
-      now + SERVICE_WINDOW_MINUTES * 60 * 1000
-    ).toISOString();
+    const end = new Date(now + SERVICE_WINDOW_MINUTES * 60 * 1000).toISOString();
     const sid = stopIdByName.get(stopName) || stopId || stopName;
 
     const ok = await sendActiveToServer({
@@ -289,8 +330,7 @@ export default function DriverApp() {
       route: "안산대 셔틀",
       active: true,
       serviceWindow: { start, end },
-      // capacity는 서버에서 vehicle 정보 기반으로 넣어도 되고 여기서 넣어도 됨
-      // capacity: 24,
+      // capacity: 24, // 필요 시 서버 or 여기에서 설정
     });
 
     if (!ok) {
@@ -310,13 +350,10 @@ export default function DriverApp() {
     setTime(`${hh}:${mm}`);
   };
 
-  /* 🧾 QR URL 자동 생성 — code 안에 busId, time 포함 */
-  const [qrUrl, setQrUrl] = useState("");
+  /* QR URL 생성 — code 안에 busId, time 포함 */
   useEffect(() => {
     (async () => {
-      const base = await getBase(); // 안 써도 되지만 혹시 base 기반으로 바꾸고 싶으면 사용
       if (busId && time) {
-        // 예: EVERYBUS_{busId}_{time}
         const payload = `EVERYBUS_${busId}_${time}`;
         const encoded = encodeURIComponent(payload);
         setQrUrl(
@@ -347,10 +384,7 @@ export default function DriverApp() {
               <div className="card-subtitle">현재 운행 정보</div>
               <div className="info-item">
                 <b>버스:</b>{" "}
-                {
-                  (busOptions.find((b) => b.id === busId) || {})
-                    .label || busId
-                }
+                {(busOptions.find((b) => b.id === busId) || {}).label || busId}
               </div>
               <div className="info-item">
                 <b>기사:</b> {driver}
@@ -365,8 +399,7 @@ export default function DriverApp() {
               <div className="divider" />
 
               <div className="info-item">
-                <b>탑승 인원:</b>{" "}
-                {onboard} 명
+                <b>탑승 인원:</b> {onboard} 명
               </div>
               <div className="info-item">
                 <b>남은 좌석:</b>{" "}
@@ -400,7 +433,7 @@ export default function DriverApp() {
               <div className="info-text" style={{ marginTop: 6 }}>
                 이 QR을 승객 앱에서 스캔하면 이 버스 탑승으로 기록되도록
                 서버의 <code>/qr/checkin</code> 로직을 구현하세요.
-                (코드: <code>EVERYBUS_{`{busId}_{time}`}</code>)
+                (코드: <code>EVERYBUS_{"{busId}_{time}"}</code>)
               </div>
             </div>
 
@@ -419,10 +452,7 @@ export default function DriverApp() {
                 </div>
               ) : (
                 busOptions.map((b) => (
-                  <label
-                    key={b.id}
-                    style={{ display: "block", margin: "4px 0" }}
-                  >
+                  <label key={b.id} style={{ display: "block", margin: "4px 0" }}>
                     <input
                       type="radio"
                       name="bus"
@@ -440,10 +470,7 @@ export default function DriverApp() {
             <div className="card">
               <div className="card-subtitle">2️⃣ 기사 선택</div>
               {driverOptions.map((d) => (
-                <label
-                  key={d}
-                  style={{ display: "block", margin: "4px 0" }}
-                >
+                <label key={d} style={{ display: "block", margin: "4px 0" }}>
                   <input
                     type="radio"
                     name="driver"
@@ -460,10 +487,7 @@ export default function DriverApp() {
             <div className="card">
               <div className="card-subtitle">3️⃣ 정류장 선택</div>
               {stops.map((s) => (
-                <label
-                  key={s.id}
-                  style={{ display: "block", margin: "4px 0" }}
-                >
+                <label key={s.id} style={{ display: "block", margin: "4px 0" }}>
                   <input
                     type="radio"
                     name="stop"
@@ -496,11 +520,7 @@ export default function DriverApp() {
                   background: "#fdfdfd",
                 }}
               />
-              <button
-                className="button-primary start"
-                onClick={handleNowTime}
-                style={{ marginTop: 8 }}
-              >
+              <button className="button-primary start" onClick={handleNowTime} style={{ marginTop: 8 }}>
                 현재 시간으로 설정
               </button>
             </div>
@@ -513,19 +533,9 @@ export default function DriverApp() {
       </div>
 
       {isDriving && showQR && (
-        <div
-          className="qr-modal-overlay"
-          onClick={() => setShowQR(false)}
-        >
-          <div
-            className="qr-modal-content"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {qrUrl ? (
-              <img src={qrUrl} alt="QR" />
-            ) : (
-              <div>QR 생성 중...</div>
-            )}
+        <div className="qr-modal-overlay" onClick={() => setShowQR(false)}>
+          <div className="qr-modal-content" onClick={(e) => e.stopPropagation()}>
+            {qrUrl ? <img src={qrUrl} alt="QR" /> : <div>QR 생성 중...</div>}
           </div>
         </div>
       )}
