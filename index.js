@@ -1,6 +1,11 @@
 // server.js
 // EveryBus 백엔드 — MongoDB Atlas(busdb) + CORS + 시간표/차량 API
 // + 운행중 메타(/bus/active) + 노선(/routes) + 대기(/wait)
+//
+// - Vehicle(bus 컬렉션): 셔틀(호차) 목록 + GPS 위치
+// - ActiveBus: "한 번의 운행" 정보 (몇호차, 몇시, 어디→어디)
+// - 기사앱: /vehicles, /stops, /bus/active 사용
+// - Termux: /bus/location/:id 로 GPS만 계속 업로드
 
 const express = require("express");
 const cors = require("cors");
@@ -26,7 +31,7 @@ const MONGO_URI =
   "mongodb+srv://master:ULUoh16HeSO0m0RJ@cluster0.rpczfaj.mongodb.net/busdb?appName=Cluster0";
 
 /* ---------------------- 사용할 버스 ID 제한(선택) ---------------------- */
-// 예) ALLOWED_BUS_IDS=350599638756152,another-id
+// 예) .env 에 ALLOWED_BUS_IDS=350599638756152,shuttle-02
 const ALLOWED_BUS_IDS = process.env.ALLOWED_BUS_IDS
   ? process.env.ALLOWED_BUS_IDS.split(",")
       .map((s) => s.trim())
@@ -42,11 +47,11 @@ function filterByAllowedBusIds(query = {}) {
 
 /* ---------------------- 스키마 ---------------------- */
 
-// 버스(GPS)
+// 버스(GPS) — 셔틀 목록 + 실시간 위치
 const VehicleSchema = new mongoose.Schema(
   {
-    id: { type: String, required: true, unique: true },
-    route: { type: String, default: "미정" },
+    id: { type: String, required: true, unique: true }, // 셔틀 ID (IMEI, 커스텀ID 등)
+    route: { type: String, default: "미정" },           // "1호차" 같은 표시용 이름
     lat: { type: Number, default: null },
     lng: { type: Number, default: null },
     heading: { type: Number, default: 0 },
@@ -63,14 +68,14 @@ const BusStopSchema = new mongoose.Schema(
     위치: {
       type: Object,
       required: true,
-      default: { type: "Point", coordinates: [0, 0] },
+      default: { type: "Point", coordinates: [0, 0] }, // [lng, lat]
     },
   },
   { collection: "BusStop", timestamps: false }
 );
 const BusStop = mongoose.model("BusStop", BusStopSchema);
 
-// 시간표
+// 시간표 (지금은 안 써도 됨)
 const TimebusSchema = new mongoose.Schema(
   {
     routeId: String,
@@ -86,25 +91,28 @@ const TimebusSchema = new mongoose.Schema(
 );
 const Timebus = mongoose.model("Timebus", TimebusSchema);
 
-// 실시간 운행 메타 (한 번의 "운행" 정보)
+// 실시간 운행 메타 — "한 번의 운행" 정보
 const ActiveBusSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, unique: true }, // Vehicle.id / 기사앱 ID
-    stopId: { type: String, required: true },           // 현재 기준 정류장(출발/경유/도착)
 
-    time: { type: String, required: true },             // 출발 시각 "HH:MM"
+    // 현재 기준 정류장(출발/경유/도착 중 하나)
+    stopId: { type: String, required: true },
 
-    // 사용자에게 보여줄 호차 이름 (예: "1호차", "2호차")
+    // 출발 시각 "HH:MM"
+    time: { type: String, required: true },
+
+    // 사용자에게 보여줄 호차 이름 (예: "1호차")
     routeLabel: { type: String, default: null },
 
-    // 출발/도착 정보
+    // 출발/도착 정류장 정보
     fromStopId: { type: String, default: null },
     fromStopName: { type: String, default: null },
     toStopId: { type: String, default: null },
     toStopName: { type: String, default: null },
 
     driver: { type: String, default: null },
-    route: { type: String, default: null }, // 노선 이름 (표시용)
+    route: { type: String, default: null }, // 노선 이름 (예: "안산대 셔틀")
     active: { type: Boolean, default: true },
 
     serviceWindow: {
@@ -149,9 +157,11 @@ const WaitSchema = new mongoose.Schema(
 const Wait = mongoose.model("Wait", WaitSchema);
 
 /* ---------------------- 기본 ---------------------- */
+
 app.get("/", (_req, res) =>
   res.type("text/plain").send("EVERYBUS API OK")
 );
+
 app.get("/health", (_req, res) =>
   res.json({
     ok: true,
@@ -162,6 +172,7 @@ app.get("/health", (_req, res) =>
 );
 
 /* ---------------------- 정류장 ---------------------- */
+
 app.get("/stops", async (_req, res) => {
   try {
     const raw = await BusStop.find({}).select("정류장명 위치 -_id").lean();
@@ -171,7 +182,7 @@ app.get("/stops", async (_req, res) => {
           ? s.위치.coordinates
           : [NaN, NaN];
         return {
-          id: String(i + 1),
+          id: String(i + 1), // /stops 응답용 id
           name: s?.정류장명 ?? "(이름없음)",
           lng: Number(lng),
           lat: Number(lat),
@@ -213,7 +224,7 @@ app.get("/stops", async (_req, res) => {
 
 /* ---------------------- 차량 위치 ---------------------- */
 
-// GET: 사용자용 현재 차량 위치
+// GET: 사용자/앱용 현재 차량 위치 목록
 app.get("/bus/location", async (_req, res) => {
   try {
     const query = filterByAllowedBusIds({
@@ -234,15 +245,17 @@ app.get("/bus/location", async (_req, res) => {
   }
 });
 
-// POST: GPS 디바이스/기사앱/Termux에서 위치 업로드
+// POST: Termux/기사앱/디바이스에서 GPS 업로드
 app.post("/bus/location/:imei", async (req, res) => {
   const { imei } = req.params;
   const { lat, lng, heading } = req.body || {};
+
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return res
       .status(400)
       .json({ error: "위도(lat), 경도(lng)는 숫자여야 합니다." });
   }
+
   try {
     const result = await Vehicle.findOneAndUpdate(
       { id: imei },
@@ -265,7 +278,7 @@ app.post("/bus/location/:imei", async (req, res) => {
   }
 });
 
-// (옵션) 위치 리셋 API — 지금은 안 쓰지만 남겨둬도 됨
+// (옵션) 위치 리셋 API — 필요하면 쓰고, 안 써도 됨
 app.post("/bus/location/reset/:imei", async (req, res) => {
   const { imei } = req.params;
   try {
@@ -280,7 +293,8 @@ app.post("/bus/location/reset/:imei", async (req, res) => {
   }
 });
 
-/* ---------------------- /vehicles (기사앱용 선택 목록) ---------------------- */
+/* ---------------------- /vehicles (기사앱용 셔틀 목록) ---------------------- */
+
 app.get("/vehicles", async (_req, res) => {
   try {
     const vQuery =
@@ -296,10 +310,10 @@ app.get("/vehicles", async (_req, res) => {
       .filter((v) => v.id)
       .map((v) => ({
         id: String(v.id),
-        label: v.route ? String(v.route) : String(v.id),
+        label: v.route ? String(v.route) : String(v.id), // "1호차" 이런 이름
       }));
 
-    // Vehicle 비어있으면 timebus 기반 fallback
+    // Vehicle 비어있으면 timebus 기반 fallback (필요 없으면 삭제해도 됨)
     if (!list.length) {
       const docs = await Timebus.find({}).select("routeId direction -_id").lean();
       const rawIds = (docs || [])
@@ -328,6 +342,7 @@ app.get("/vehicles", async (_req, res) => {
 });
 
 /* ---------------------- /timebus ---------------------- */
+
 app.get("/timebus", async (req, res) => {
   try {
     const { routeId, direction, origin, destination } = req.query;
@@ -361,7 +376,7 @@ app.get("/timebus", async (req, res) => {
 
 /* ---------------------- /bus/active (운행중 메타) ---------------------- */
 
-// GET /bus/active : 사용자 앱에서 사용 (현재 운행 중인 버스 목록)
+// GET /bus/active : 사용자 앱에서 "현재 운행 중 져틀 리스트" 표시용
 app.get("/bus/active", async (_req, res) => {
   try {
     const now = Date.now();
@@ -384,7 +399,7 @@ app.get("/bus/active", async (_req, res) => {
   }
 });
 
-// PUT /bus/active : 기사앱에서 한 번 운행(출발/도착/호차정보) 업서트
+// PUT /bus/active : 기사앱이 "운행 시작/갱신/종료" 업서트하는 곳
 app.put("/bus/active", async (req, res) => {
   try {
     const {
@@ -406,7 +421,7 @@ app.put("/bus/active", async (req, res) => {
       return res.status(400).json({ error: "id 필수" });
     }
 
-    // 종료
+    // 운행 종료
     if (active === false) {
       const doc = await ActiveBus.findOneAndUpdate(
         { id: String(id) },
@@ -420,7 +435,7 @@ app.put("/bus/active", async (req, res) => {
       });
     }
 
-    // 시작/갱신
+    // 운행 시작/갱신
     if (!stopId || !time) {
       return res
         .status(400)
@@ -560,7 +575,7 @@ app.get("/wait/summary", async (req, res) => {
 
 /* ---------------------- 노선(Route) ---------------------- */
 
-// 저장
+// 노선 저장
 app.post("/routes", async (req, res) => {
   try {
     const { name, points } = req.body || {};
@@ -606,7 +621,7 @@ app.post("/routes", async (req, res) => {
   }
 });
 
-// 조회
+// 노선 조회
 app.get("/routes", async (_req, res) => {
   try {
     const rows = await Route.find({}).lean();
@@ -627,11 +642,13 @@ app.get("/routes", async (_req, res) => {
 });
 
 /* ---------------------- 404 ---------------------- */
+
 app.use((_req, res) =>
   res.status(404).json({ error: "Not Found" })
 );
 
 /* ---------------------- 서버 시작 ---------------------- */
+
 mongoose
   .connect(MONGO_URI)
   .then(() => {
