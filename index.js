@@ -1,7 +1,6 @@
-// server.js
-// EveryBus 백엔드 — MongoDB Atlas(busdb) + CORS + 시간표/차량 API
-// + 운행중 메타(/bus/active) + 노선(/routes) + 대기(/wait)
-// 패치: /bus/location 신선도 필터 + 좌표 reset 엔드포인트
+// server.js — EveryBus 백엔드 (최종 통합본)
+// 기능: CORS, MongoDB, 차량 위치, 운행중 메타, 정류장, 시간표, 노선, 대기
+// 패치: /routes 엔드포인트 추가, 위치 신선도 필터, 초기 좌표 reset, 캐시 무효화
 
 const express = require("express");
 const cors = require("cors");
@@ -149,18 +148,15 @@ app.get("/stops", async (_req, res) => {
 });
 
 /* ---------------------- 차량 위치 ---------------------- */
+const FRESH_MS = Number(process.env.LOCATION_FRESH_MS || 2 * 60 * 1000); // 오래된 좌표 숨김 (기본 2분)
 
-// 신선도(ms) — 오래된 좌표 숨김
-const FRESH_MS = Number(process.env.LOCATION_FRESH_MS || 2 * 60 * 1000); // 기본 2분
-
-// 목록(학생용)
 app.get("/bus/location", async (_req, res) => {
   try {
     const now = Date.now();
     const query = filterByAllowedBusIds({
       lat: { $ne: null },
       lng: { $ne: null },
-      updatedAt: { $gte: now - FRESH_MS }, // 신선도 필터
+      updatedAt: { $gte: now - FRESH_MS },
     });
 
     const vehicles = await Vehicle.find(query)
@@ -176,7 +172,6 @@ app.get("/bus/location", async (_req, res) => {
   }
 });
 
-// 단건(디버그용)
 app.get("/bus/location/:id", async (req, res) => {
   try {
     const q = filterByAllowedBusIds({ id: String(req.params.id) });
@@ -190,14 +185,12 @@ app.get("/bus/location/:id", async (req, res) => {
   }
 });
 
-// 업로드(기사앱/디바이스)
 app.post("/bus/location/:imei", async (req, res) => {
   const { imei } = req.params;
   const { lat, lng, heading } = req.body || {};
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return res.status(400).json({ error: "위도(lat), 경도(lng)는 숫자여야 합니다." });
   }
-  // 한국 대략 범위
   if (lat < 30 || lat > 45 || lng < 120 || lng > 135) {
     return res.status(400).json({ error: "비정상 좌표 범위" });
   }
@@ -223,7 +216,7 @@ app.post("/bus/location/:imei", async (req, res) => {
   }
 });
 
-// (옵션) 지난 좌표 리셋 — 운행 시작 직전 호출하면 초기 점프 0
+// 운행 시작 전 지난 좌표 리셋(선택)
 app.post("/bus/location/reset/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -235,7 +228,7 @@ app.post("/bus/location/reset/:id", async (req, res) => {
   }
 });
 
-/* ---------------------- /vehicles ---------------------- */
+/* ---------------------- 차량 선택 목록 ---------------------- */
 app.get("/vehicles", async (_req, res) => {
   try {
     const vQuery = ALLOWED_BUS_IDS && ALLOWED_BUS_IDS.length ? { id: { $in: ALLOWED_BUS_IDS } } : {};
@@ -265,7 +258,7 @@ app.get("/vehicles", async (_req, res) => {
   }
 });
 
-/* ---------------------- /timebus ---------------------- */
+/* ---------------------- 시간표 ---------------------- */
 app.get("/timebus", async (req, res) => {
   try {
     const { routeId, direction, origin, destination } = req.query;
@@ -294,7 +287,7 @@ app.get("/timebus", async (req, res) => {
   }
 });
 
-/* ---------------------- /bus/active ---------------------- */
+/* ---------------------- 운행중 메타 ---------------------- */
 app.get("/bus/active", async (_req, res) => {
   try {
     const now = Date.now();
@@ -385,6 +378,44 @@ app.post("/bus/active/stop", async (req, res) => {
   }
 });
 
+/* ---------------------- 노선(Route) ---------------------- */
+// 저장
+app.post("/routes", async (req, res) => {
+  try {
+    const { name, points } = req.body || {};
+    if (!name || !Array.isArray(points) || points.length < 2) {
+      return res.status(400).json({ error: "name과 최소 2개 이상의 points가 필요합니다." });
+    }
+    const cleanPoints = points
+      .map((p) => ({ lat: Number(p.lat), lng: Number(p.lng) }))
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+    if (cleanPoints.length < 2) return res.status(400).json({ error: "유효한 좌표가 부족합니다." });
+
+    const doc = await Route.create({ name: String(name), points: cleanPoints, createdAt: new Date() });
+    res.json({ ok: true, route: { id: String(doc._id), name: doc.name, points: doc.points } });
+  } catch (e) {
+    console.error("❌ /routes POST:", e);
+    res.status(500).json({ error: "노선 저장 실패" });
+  }
+});
+
+// 조회
+app.get("/routes", async (_req, res) => {
+  try {
+    const rows = await Route.find({}).lean();
+    res.json(
+      rows.map((r) => ({
+        id: String(r._id),
+        name: r.name,
+        points: (r.points || []).map((p) => ({ lat: Number(p.lat), lng: Number(p.lng) })),
+      }))
+    );
+  } catch (e) {
+    console.error("❌ /routes GET:", e);
+    res.status(500).json({ error: "노선 조회 실패" });
+  }
+});
+
 /* ---------------------- 대기 ---------------------- */
 app.post("/wait", async (req, res) => {
   try {
@@ -416,7 +447,11 @@ app.post("/wait/cancel", async (req, res) => {
   try {
     const { token } = req.body || {};
     if (!token) return res.status(400).json({ ok: false, error: "token 필수" });
-    const doc = await Wait.findOneAndUpdate({ token }, { $set: { canceled: true, canceledAt: new Date() } }, { new: true });
+    const doc = await Wait.findOneAndUpdate(
+      { token },
+      { $set: { canceled: true, canceledAt: new Date() } },
+      { new: true }
+    );
     if (!doc) return res.json({ ok: false, error: "해당 토큰 없음" });
     res.json({ ok: true });
   } catch (e) {
