@@ -244,10 +244,7 @@ export default function DriverApp() {
     const sid = stopIdByName.get(stopName) || stopId || stopName;
 
     // (선택) 이전 좌표 리셋 — 오래된 좌표가 남아있을 가능성 제거
-    try {
-      await fetch(`${base}/bus/location/reset/${busId}`, { method: "POST" });
-    } catch {}
-
+ 
     // active 업서트
     const ok = await upsertActive({
       id: busId,
