@@ -11,6 +11,9 @@ const GPS_POLL_MS = 8000;           // 위치 주기 업로드
 const PASSENGER_POLL_MS = 5000;     // 좌석/탑승 인원 폴링
 const SERVICE_WINDOW_MINUTES = 120; // 운행 윈도우
 
+// 🔒 기사앱 위치 업로드 비활성화 스위치 (필요 시 true로 바꾸면 즉시 활성화)
+const DRIVER_UPLOAD_ENABLED = false;
+
 let cachedBase = null;
 async function getBase() {
   if (cachedBase) return cachedBase;
@@ -129,9 +132,9 @@ export default function DriverApp() {
     return m;
   }, [stops]);
 
-  // 주기 GPS 업로드(운행 중에만)
+  // 🔕 주기 GPS 업로드(운행 중에만) — 기사앱 업로드 비활성화
   useEffect(() => {
-    if (!isDriving || !busId) return;
+    if (!DRIVER_UPLOAD_ENABLED || !isDriving || !busId) return;
     let timer;
 
     const loop = async () => {
@@ -146,6 +149,7 @@ export default function DriverApp() {
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
             heading: Number.isFinite(pos.coords.heading) ? pos.coords.heading : 0,
+            // source: "driver", // 옵션 C 재활성 시 추천
           };
           try {
             await fetch(`${base}/bus/location/${busId}`, {
@@ -259,14 +263,15 @@ export default function DriverApp() {
       return;
     }
 
-    // ✅ 운행 시작 직후: 고정밀+캐시무효 1회 업로드 (이게 핵심!)
-    if (navigator.geolocation) {
+    // ✅ 운행 시작 직후 1회 업로드 — 비활성 스위치 반영
+    if (DRIVER_UPLOAD_ENABLED && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
           const body = {
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
             heading: Number.isFinite(pos.coords.heading) ? pos.coords.heading : 0,
+            // source: "driver", // 옵션 C 재활성 시 추천
           };
           try {
             await fetch(`${base}/bus/location/${busId}`, {
