@@ -1,5 +1,12 @@
 // DriverApp.js — EveryBus 기사님용 (호차 / 출발·도착 정류장 선택 + 좌석표시 + QR)
 // 서버: https://project-1-ek9j.onrender.com
+// 특징:
+//  - 호차(셔틀) 목록: /vehicles  (더미든 실제든 서버에서 가져옴)
+//  - 정류장 목록: /stops
+//  - 운행 정보: /bus/active (출발/도착, 시간, 기사, routeLabel 등 저장)
+//  - 좌석/탑승 인원: /bus/active 폴링
+//  - QR 코드: EVERBUS_{busId}_{time}
+//  - ⚠️ 위치(GPS)는 Termux에서만 서버로 전송. 기사 앱에서는 GPS 안 보냄!
 
 import React, { useEffect, useMemo, useState } from "react";
 import "./App.css";
@@ -56,6 +63,7 @@ export default function DriverApp() {
   const [driver, setDriver] = useState("");
   const [time, setTime] = useState("");
 
+  // 출발 / 도착 정류장
   const [fromStopName, setFromStopName] = useState("");
   const [fromStopId, setFromStopId] = useState("");
   const [toStopName, setToStopName] = useState("");
@@ -75,12 +83,12 @@ export default function DriverApp() {
 
   const driverOptions = ["김기사", "박기사", "이기사", "최기사"];
 
-  /* 초기 데이터 로딩 */
+  /* 초기 데이터 로딩: /vehicles, /stops */
   useEffect(() => {
     (async () => {
       const base = await getBase();
 
-      // 1) /vehicles 로 호차 목록 받기
+      // 1) /vehicles 로 호차 목록 받기 (더미 포함)
       let vehicles = [];
       try {
         const r = await fetch(`${base}/vehicles`, { cache: "no-store" });
@@ -99,7 +107,7 @@ export default function DriverApp() {
       }
       setBusOptions(vehicles);
 
-      // 2) 정류장 목록
+      // 2) 정류장 목록 (/stops)
       try {
         const r = await fetch(`${base}/stops`, { cache: "no-store" });
         if (r.ok) {
@@ -294,6 +302,10 @@ export default function DriverApp() {
                   (총 좌석수: {capacity}석)
                 </div>
               )}
+              <div className="info-text" style={{ marginTop: 4 }}>
+                ※ 위치는 Termux에서 서버로 보내는 GPS 기준으로
+                사용자 앱에서 표시됩니다.
+              </div>
             </div>
 
             {/* QR 코드 */}
@@ -308,6 +320,12 @@ export default function DriverApp() {
               ) : (
                 <div className="info-text">QR 생성 중...</div>
               )}
+              <div className="info-text" style={{ marginTop: 6 }}>
+                이 QR을 승객 앱에서 스캔하면 서버의{" "}
+                <code>/qr/checkin</code> 로직에서 탑승 처리하도록
+                구현할 수 있습니다. <br />
+                (코드: <code>EVERYBUS_{"{busId}_{time}"}</code>)
+              </div>
             </div>
 
             <button className="button-primary stop" onClick={handleToggle}>
@@ -316,12 +334,12 @@ export default function DriverApp() {
           </>
         ) : (
           <>
-            {/* 1️⃣ 호차 선택 (Vehicle.id + label) */}
+            {/* 1️⃣ 호차 선택 */}
             <div className="card">
               <div className="card-subtitle">1️⃣ 호차 선택</div>
               {busOptions.length === 0 ? (
                 <div className="info-text">
-                  등록된 실시간 셔틀이 없습니다.
+                  등록된 실시간 셔틀이 없습니다. (관리자에게 차량 등록 요청)
                 </div>
               ) : (
                 busOptions.map((b) => (
