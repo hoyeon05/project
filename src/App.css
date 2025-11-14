@@ -9,6 +9,7 @@
   --text-muted: #6c757d; /* 연한 텍스트 (도착 정보 등) */
   --border-color: #E0E0E0; /* 테두리색 */
   --shadow-light: 0 4px 12px rgba(0, 0, 0, 0.06); /* 부드러운 그림자 */
+  --star-active-color: #FFD700; /* [추가] 즐겨찾기 활성 색상 (금색) */
 }
 
 /* box-sizing을 적용해 패딩/보더 계산을 쉽게 합니다. */
@@ -72,6 +73,10 @@ button {
 .page-title {
   font-size: 1.125rem; /* 18px */
   font-weight: 600;
+  /* [추가] 제목이 길어질 때 잘림 처리 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-back-btn {
@@ -79,6 +84,10 @@ button {
   color: var(--text-light);
   padding: 4px 8px;
   border-radius: 4px;
+  /* [추가] SVG 아이콘 정렬 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .header-back-btn:hover {
   background-color: rgba(255, 255, 255, 0.1);
@@ -87,6 +96,9 @@ button {
 .header-right {
   min-width: 2rem;
   text-align: right;
+  /* [추가] 헤더 오른쪽 요소가 겹치지 않게 */
+  flex-shrink: 0;
+  margin-left: 8px;
 }
 
 /* 헤더에 있는 알림설정 버튼 등 */
@@ -119,6 +131,7 @@ button {
 
 .tab-bar-inner {
   display: grid;
+  /* 원본 파일의 3칸 레이아웃 (정상) */
   grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
   padding: 8px;
@@ -137,6 +150,10 @@ button {
 }
 .tab-icon {
   font-size: 1.25rem; /* 20px */
+  /* [추가] SVG 아이콘 정렬 */
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem; /* 아이콘 높이 고정 (레이아웃 쉬프트 방지) */
 }
 .tab-label {
   font-size: 0.75rem; /* 12px */
@@ -200,6 +217,11 @@ button {
   box-shadow: var(--shadow-light);
   margin-bottom: 20px;
 }
+/* [추가] 검색 아이콘 스타일 */
+.search-icon {
+  color: var(--text-muted);
+  font-size: 1rem;
+}
 .search-input {
   flex-grow: 1;
   border: none;
@@ -245,7 +267,7 @@ button {
 .bus-list {
   display: flex;
   flex-direction: column;
-  gap: 12px; /* 아이템 간 간격 */
+  gap: 12px; /* 아이템 간격 */
 }
 
 .bus-item {
@@ -271,10 +293,14 @@ button {
   align-items: center;
   justify-content: space-between;
   padding: 16px;
+  gap: 12px; /* [추가] 콘텐츠와 버튼 사이 간격 */
 }
 .bus-item-name {
   font-weight: 600;
   color: var(--text-color);
+  /* [추가] 이름이 길어질 때 대비 */
+  flex-grow: 1;
+  word-break: keep-all;
 }
 .bus-item-arrival {
   font-size: 0.875rem; /* 14px */
@@ -285,10 +311,25 @@ button {
   font-size: 1.25rem; /* 20px */
   padding: 8px;
   border-radius: 50%;
+  /* [추가] SVG 아이콘 정렬 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* [추가] 버튼 영역 고정 */
+  flex-shrink: 0;
+  /* [수정] 기본 색상 */
+  color: var(--text-muted);
+  transition: all 0.2s ease;
 }
 .favorite-btn:hover {
   background-color: var(--background-color);
+  color: var(--text-color);
 }
+/* [추가] 즐겨찾기 활성 버튼 스타일 */
+.favorite-btn.active {
+  color: var(--star-active-color);
+}
+
 
 .list-empty-text {
   text-align: center;
@@ -303,7 +344,7 @@ button {
   border-radius: 16px;
   padding: 16px;
   box-shadow: var(--shadow-light);
-  margin-bottom: 16px; /* 카드 간 간격 */
+  margin-bottom: 16px; /* 카드 간격 */
 }
 
 .card-subtitle {
@@ -393,13 +434,21 @@ button {
 .not-found-icon {
   font-size: 2.5rem; /* 40px */
   margin-bottom: 8px;
+  /* [추가] SVG 아이콘 정렬 */
+  display: inline-flex;
 }
 .not-found-title {
   font-weight: 600;
+  margin-bottom: 12px; /* [추가] */
 }
 .link {
   color: var(--primary-color);
   font-weight: 500;
+  padding: 4px 8px; /* [추가] */
+  border-radius: 4px; /* [추가] */
+}
+.link:hover {
+  background-color: var(--background-color); /* [추가] */
 }
 
 /* === 7. 시간표 (추가) === */
@@ -428,4 +477,15 @@ button {
   color: var(--text-muted);
   font-style: italic;
   font-size: 0.8rem;
+}
+
+/* === [신규] 8. QR 스캔 === */
+.qr-wrap {
+  width: 100%;
+  max-width: 400px;
+  margin: 16px auto 0 auto;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-light);
 }
