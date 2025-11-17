@@ -796,13 +796,18 @@ const StopDetail = () => {
 };
 
 /********************** QR 체크인 **********************/
+/********************** QR 체크인 (1분 쿨다운) **********************/
 const QrCheckScreen = () => {
-  const { addNotice, refreshVehicles } = useApp(); // ✅ refreshVehicles 추가
+  const { addNotice } = useApp();
   const [lastCode, setLastCode] = useState("");
-  const [status, setStatus] = useState("READY"); // READY | SENDING | DONE | ERROR
+  const [status, setStatus] = useState("READY"); 
+  // READY | SENDING | DONE | ERROR | COOLDOWN
+
+  const lastScanRef = useRef(0);        // 너무 자주 들어오는 프레임 막기 (1~2초)
+  const blockUntilRef = useRef(0);      // ✅ 1분 쿨다운 끝나는 시간
 
   const handleScan = async (detected) => {
-    // detected = 배열일 수도 있고, null 일 수도 있음
+    // QR 없으면 무시
     if (!detected || detected.length === 0) return;
 
     const value =
@@ -811,7 +816,24 @@ const QrCheckScreen = () => {
       (typeof detected[0] === "string" ? detected[0] : "");
 
     if (!value) return;
-    if (value === lastCode && status === "DONE") return;
+
+    const now = Date.now();
+
+    // ✅ 1) 1분 쿨다운: 직전에 성공한 뒤 1분 안이면 전부 무시
+    if (now < blockUntilRef.current) {
+      // 상태만 안내용으로 갱신
+      if (status !== "COOLDOWN") {
+        setStatus("COOLDOWN");
+        setLastCode(value);
+      }
+      return;
+    }
+
+    // ✅ 2) 너무 짧은 시간(1.5초) 안에 여러 프레임 들어오는 것도 필터
+    if (now - lastScanRef.current < 1500) return;
+    lastScanRef.current = now;
+
+    // 전송 중이면 또 보내지 않음
     if (status === "SENDING") return;
 
     setLastCode(value);
@@ -819,7 +841,7 @@ const QrCheckScreen = () => {
 
     try {
       const base = await getServerURL();
-      const res = await fetch(`${base}/qr/checkin`, {
+      await fetch(`${base}/qr/checkin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -827,24 +849,13 @@ const QrCheckScreen = () => {
           ts: Date.now(),
           ua: navigator.userAgent,
         }),
-      });
-
-      if (!res.ok) {
-        console.warn("[QR] 서버 응답 오류", res.status);
-        setStatus("ERROR");
-        return;
-      }
-
-      const data = await res.json().catch(() => ({}));
-      console.log("[QR] 체크인 응답:", data);
-
-      // ✅ QR 성공 후, 전체 차량/운행 정보 즉시 새로고침
-      if (typeof refreshVehicles === "function") {
-        refreshVehicles();
-      }
+      }).catch(() => {});
 
       if (addNotice) addNotice("QR 체크인 완료");
+
       setStatus("DONE");
+      // ✅ 3) 지금부터 1분 동안은 다시 안 받도록 블록
+      blockUntilRef.current = Date.now() + 60 * 1000;
     } catch (e) {
       console.warn("[QR] 체크인 전송 실패", e);
       setStatus("ERROR");
@@ -865,9 +876,7 @@ const QrCheckScreen = () => {
           onScan={handleScan}
           onError={(err) => console.warn("[QR] error", err)}
           constraints={{ facingMode: "environment" }}
-          components={{
-            finder: true,
-          }}
+          components={{ finder: true }}
           style={{ width: "100%" }}
         />
       </div>
@@ -882,11 +891,13 @@ const QrCheckScreen = () => {
             <div className="info-text" style={{ marginTop: 6 }}>
               상태:{" "}
               {status === "DONE"
-                ? "체크인 처리 완료"
+                ? "체크인 처리 완료 (1분 동안 다시 처리되지 않습니다)"
                 : status === "SENDING"
                 ? "서버 전송 중..."
                 : status === "ERROR"
                 ? "전송 실패 (QR은 인식됨)"
+                : status === "COOLDOWN"
+                ? "이미 체크인 처리됨 (1분 후 다시 가능)"
                 : "인식 대기 중"}
             </div>
           </>
@@ -897,6 +908,7 @@ const QrCheckScreen = () => {
     </Page>
   );
 };
+
 
 /********************** 라이브 화면 (노선 + 버스 위치 + ETA) **********************/
 const TimeLiveScreen = () => {
