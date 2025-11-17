@@ -19,7 +19,6 @@ import {
 } from "react-router-dom";
 import { Scanner } from "@yudiel/react-qr-scanner";
 
-
 import "./App.css";
 
 /********************** 환경값 **********************/
@@ -269,9 +268,7 @@ async function fetchRoutesOnce() {
             lat: Number(p.lat),
             lng: Number(p.lng),
           }))
-          .filter(
-            (p) => Number.isFinite(p.lat) && Number.isFinite(p.lng)
-          ),
+          .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng)),
       }))
       .filter((r) => r.id && r.name && r.points.length > 1);
 
@@ -446,7 +443,10 @@ const HomeScreen = () => {
     stopMarkers.current = [];
     stops.forEach((s) => {
       const pos = new window.kakao.maps.LatLng(s.lat, s.lng);
-      const marker = new window.kakao.maps.Marker({ position: pos, map: mapRef.current });
+      const marker = new window.kakao.maps.Marker({
+        position: pos,
+        map: mapRef.current,
+      });
       window.kakao.maps.event.addListener(marker, "click", () =>
         nav(`/stop/${s.id}`)
       );
@@ -733,11 +733,7 @@ const StopDetail = () => {
   const activeTimes = useMemo(() => {
     const set = new Set();
     vehicles.forEach((v) => {
-      if (
-        String(v.stopId) === String(id) &&
-        isActiveNow(v) &&
-        v.time
-      ) {
+      if (String(v.stopId) === String(id) && isActiveNow(v) && v.time) {
         set.add(String(v.time).trim());
       }
     });
@@ -800,9 +796,8 @@ const StopDetail = () => {
 };
 
 /********************** QR 체크인 **********************/
-/********************** QR 체크인 **********************/
 const QrCheckScreen = () => {
-  const { addNotice } = useApp();
+  const { addNotice, refreshVehicles } = useApp(); // ✅ refreshVehicles 추가
   const [lastCode, setLastCode] = useState("");
   const [status, setStatus] = useState("READY"); // READY | SENDING | DONE | ERROR
 
@@ -824,7 +819,7 @@ const QrCheckScreen = () => {
 
     try {
       const base = await getServerURL();
-      await fetch(`${base}/qr/checkin`, {
+      const res = await fetch(`${base}/qr/checkin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -832,7 +827,21 @@ const QrCheckScreen = () => {
           ts: Date.now(),
           ua: navigator.userAgent,
         }),
-      }).catch(() => {});
+      });
+
+      if (!res.ok) {
+        console.warn("[QR] 서버 응답 오류", res.status);
+        setStatus("ERROR");
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
+      console.log("[QR] 체크인 응답:", data);
+
+      // ✅ QR 성공 후, 전체 차량/운행 정보 즉시 새로고침
+      if (typeof refreshVehicles === "function") {
+        refreshVehicles();
+      }
 
       if (addNotice) addNotice("QR 체크인 완료");
       setStatus("DONE");
@@ -856,7 +865,7 @@ const QrCheckScreen = () => {
           onScan={handleScan}
           onError={(err) => console.warn("[QR] error", err)}
           constraints={{ facingMode: "environment" }}
-          components={{ // 기본 UI 최대한 심플하게
+          components={{
             finder: true,
           }}
           style={{ width: "100%" }}
@@ -888,7 +897,6 @@ const QrCheckScreen = () => {
     </Page>
   );
 };
-
 
 /********************** 라이브 화면 (노선 + 버스 위치 + ETA) **********************/
 const TimeLiveScreen = () => {
@@ -925,9 +933,7 @@ const TimeLiveScreen = () => {
     if (!s) return null;
     const withDist = actives
       .filter(
-        (v) =>
-          Number.isFinite(v.lat) &&
-          Number.isFinite(v.lng)
+        (v) => Number.isFinite(v.lat) && Number.isFinite(v.lng)
       )
       .map((v) => ({
         v,
@@ -944,9 +950,7 @@ const TimeLiveScreen = () => {
     if (!stop || actives.length === 0) return "정보 없음";
     const withDist = actives
       .filter(
-        (v) =>
-          Number.isFinite(v.lat) &&
-          Number.isFinite(v.lng)
+        (v) => Number.isFinite(v.lat) && Number.isFinite(v.lng)
       )
       .map((v) => ({
         v,
@@ -956,14 +960,9 @@ const TimeLiveScreen = () => {
         ),
       }));
     if (!withDist.length) return "정보 없음";
-    const nearest = withDist.sort(
-      (a, b) => a.d - b.d
-    )[0];
+    const nearest = withDist.sort((a, b) => a.d - b.d)[0];
     const mps = (speedKmh * 1000) / 3600;
-    const mins = Math.max(
-      1,
-      Math.round(nearest.d / mps / 60)
-    );
+    const mins = Math.max(1, Math.round(nearest.d / mps / 60));
     return `${mins}분 후 도착 예정`;
   }, [actives, stop, speedKmh]);
 
@@ -1030,11 +1029,7 @@ const TimeLiveScreen = () => {
       overlays.current.forEach((o) => o.setMap(null));
       overlays.current = [];
       actives.forEach((v) => {
-        if (
-          !Number.isFinite(v.lat) ||
-          !Number.isFinite(v.lng)
-        )
-          return;
+        if (!Number.isFinite(v.lat) || !Number.isFinite(v.lng)) return;
         const overlay = new kakao.maps.CustomOverlay({
           position: new kakao.maps.LatLng(v.lat, v.lng),
           content: `<div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-50%);">
@@ -1098,6 +1093,12 @@ export default function App() {
   const [userLocation, setUserLocation] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [toasts, setToasts] = useState([]);
+
+  // ✅ QR 이후 강제 새로고침용
+  const refreshVehicles = async () => {
+    const v = await fetchVehiclesOnce();
+    setVehicles(v);
+  };
 
   const addNotice = (message) => {
     if (!NOTIFY_ENABLED) return;
@@ -1189,6 +1190,7 @@ export default function App() {
     alerts,
     clearAlerts,
     addNotice,
+    refreshVehicles, // ✅ QR에서 사용
   };
 
   return (
