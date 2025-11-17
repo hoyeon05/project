@@ -52,7 +52,7 @@ function filterByAllowedBusIds(query = {}) {
 const VehicleSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, unique: true }, // 셔틀 ID (IMEI, 커스텀ID 등)
-    route: { type: String, default: "미정" },           // "1호차" 같은 표시용 이름
+    route: { type: String, default: "미정" }, // "1호차" 같은 표시용 이름
     lat: { type: Number, default: null },
     lng: { type: Number, default: null },
     heading: { type: Number, default: 0 },
@@ -118,7 +118,7 @@ const ActiveBusSchema = new mongoose.Schema(
 
     // ✅ QR 체크인용 좌석/탑승 정보
     capacity: { type: Number, default: 45 }, // 기본 좌석 수
-    onboard: { type: Number, default: 0 },   // 현재 탑승 인원
+    onboard: { type: Number, default: 0 }, // 현재 탑승 인원
 
     serviceWindow: {
       start: { type: Date, default: null },
@@ -422,17 +422,25 @@ app.put("/bus/active", async (req, res) => {
       fromStopName,
       toStopId,
       toStopName,
+      capacity, // 기사앱에서 좌석 수 보내면 반영, 아니면 기본값
     } = req.body || {};
 
     if (!id) {
       return res.status(400).json({ error: "id 필수" });
     }
 
-    // 운행 종료
+    // 🔴 운행 종료
     if (active === false) {
       const doc = await ActiveBus.findOneAndUpdate(
         { id: String(id) },
-        { $set: { active: false, updatedAt: new Date() } },
+        {
+          $set: {
+            active: false,
+            onboard: 0, // ✅ 운행 종료 시 탑승 인원 초기화
+            serviceWindow: null,
+            updatedAt: new Date(),
+          },
+        },
         { new: true }
       );
       return res.json({
@@ -442,7 +450,7 @@ app.put("/bus/active", async (req, res) => {
       });
     }
 
-    // 운행 시작/갱신
+    // 🔵 운행 시작/갱신
     if (!stopId || !time) {
       return res
         .status(400)
@@ -464,13 +472,18 @@ app.put("/bus/active", async (req, res) => {
           toStopName: toStopName ?? null,
           active: true,
           serviceWindow: serviceWindow || null,
+          // ✅ 운행 시작할 때도 항상 리셋
+          onboard: 0,
+          capacity: Number.isFinite(Number(capacity))
+            ? Number(capacity)
+            : 45,
           updatedAt: new Date(),
         },
       },
       {
         new: true,
         upsert: true,
-        setDefaultsOnInsert: true, // ✅ capacity/onboard 기본값 적용
+        setDefaultsOnInsert: true,
       }
     );
 
@@ -683,8 +696,7 @@ app.post("/routes", async (req, res) => {
         lng: Number(p.lng),
       }))
       .filter(
-        (p) =>
-          Number.isFinite(p.lat) && Number.isFinite(p.lng)
+        (p) => Number.isFinite(p.lat) && Number.isFinite(p.lng)
       );
 
     if (cleanPoints.length < 2) {
