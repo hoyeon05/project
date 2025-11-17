@@ -10,6 +10,7 @@
     "@yudiel/react-qr-scanner": "^2.4.1",
     "react": "^18",
     "react-dom": "^18",
+    "react-icons": "^5.5.0",
     "react-router-dom": "^6",
     "react-scripts": "5.x",
     "web-vitals": "^2.1.4"
