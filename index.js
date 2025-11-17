@@ -1,11 +1,12 @@
 // server.js
 // EveryBus 백엔드 — MongoDB Atlas(busdb) + CORS + 시간표/차량 API
-// + 운행중 메타(/bus/active) + 노선(/routes) + 대기(/wait)
+// + 운행중 메타(/bus/active) + 노선(/routes) + 대기(/wait) + QR 체크인(/qr/checkin)
 //
 // - Vehicle(bus 컬렉션): 셔틀(호차) 목록 + GPS 위치
-// - ActiveBus: "한 번의 운행" 정보 (몇호차, 몇시, 어디→어디)
+// - ActiveBus: "한 번의 운행" 정보 (몇호차, 몇시, 어디→어디, 좌석/탑승)
 // - 기사앱: /vehicles, /stops, /bus/active 사용
 // - Termux: /bus/location/:id 로 GPS만 계속 업로드
+// - 승객앱: /stops, /bus/location, /bus/active, /qr/checkin 사용
 
 const express = require("express");
 const cors = require("cors");
@@ -114,6 +115,10 @@ const ActiveBusSchema = new mongoose.Schema(
     driver: { type: String, default: null },
     route: { type: String, default: null }, // 노선 이름 (예: "안산대 셔틀")
     active: { type: Boolean, default: true },
+
+    // ✅ QR 체크인용 좌석/탑승 정보
+    capacity: { type: Number, default: 45 }, // 기본 좌석 수
+    onboard: { type: Number, default: 0 },   // 현재 탑승 인원
 
     serviceWindow: {
       start: { type: Date, default: null },
@@ -315,7 +320,9 @@ app.get("/vehicles", async (_req, res) => {
 
     // Vehicle 비어있으면 timebus 기반 fallback (필요 없으면 삭제해도 됨)
     if (!list.length) {
-      const docs = await Timebus.find({}).select("routeId direction -_id").lean();
+      const docs = await Timebus.find({})
+        .select("routeId direction -_id")
+        .lean();
       const rawIds = (docs || [])
         .map((d) => d.routeId || d.direction)
         .filter(Boolean);
@@ -376,7 +383,7 @@ app.get("/timebus", async (req, res) => {
 
 /* ---------------------- /bus/active (운행중 메타) ---------------------- */
 
-// GET /bus/active : 사용자 앱에서 "현재 운행 중 져틀 리스트" 표시용
+// GET /bus/active : 사용자 앱에서 "현재 운행 중 셔틀 리스트" 표시용
 app.get("/bus/active", async (_req, res) => {
   try {
     const now = Date.now();
@@ -460,13 +467,98 @@ app.put("/bus/active", async (req, res) => {
           updatedAt: new Date(),
         },
       },
-      { new: true, upsert: true }
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true, // ✅ capacity/onboard 기본값 적용
+      }
     );
 
     return res.json({ ok: true, id: doc.id });
   } catch (e) {
     console.error("❌ /bus/active PUT:", e);
     return res.status(500).json({ error: "active 업서트 실패" });
+  }
+});
+
+/* ---------------------- QR 체크인 ---------------------- */
+// QR 코드 포맷: EVERBUS_{busId}_{time}
+// 예: EVERBUS_350599638756152_08:30
+app.post("/qr/checkin", async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    if (!code) {
+      return res.status(400).json({ ok: false, error: "code 필수" });
+    }
+
+    const raw = String(code);
+    const PREFIX = "EVERYBUS_";
+    if (!raw.startsWith(PREFIX)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "유효하지 않은 QR 형식입니다." });
+    }
+
+    const payload = raw.slice(PREFIX.length); // "<busId>_<time>"
+    const lastIdx = payload.lastIndexOf("_");
+    if (lastIdx === -1) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "QR에서 busId/time 파싱 실패" });
+    }
+
+    const busId = payload.slice(0, lastIdx);
+    const time = payload.slice(lastIdx + 1);
+
+    if (!busId || !time) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "busId 또는 time 정보가 비어 있습니다." });
+    }
+
+    // ALLOWED_BUS_IDS 체크 (설정된 경우만)
+    if (
+      ALLOWED_BUS_IDS &&
+      ALLOWED_BUS_IDS.length &&
+      !ALLOWED_BUS_IDS.includes(String(busId))
+    ) {
+      return res
+        .status(403)
+        .json({ ok: false, error: "허용되지 않은 버스 ID" });
+    }
+
+    // 현재 운행 중인 해당 셔틀 찾기 (id + time + active=true)
+    const doc = await ActiveBus.findOneAndUpdate(
+      {
+        id: String(busId),
+        time: String(time),
+        active: true,
+      },
+      {
+        $inc: { onboard: 1 },
+        $set: { updatedAt: new Date() },
+      },
+      { new: true }
+    );
+
+    if (!doc) {
+      return res.status(404).json({
+        ok: false,
+        error:
+          "해당 QR에 맞는 운행 정보를 찾을 수 없습니다. (운행 시작 전일 수도 있음)",
+      });
+    }
+
+    return res.json({
+      ok: true,
+      id: doc.id,
+      time: doc.time,
+      onboard: doc.onboard ?? 0,
+      capacity: doc.capacity ?? null,
+    });
+  } catch (e) {
+    console.error("❌ /qr/checkin:", e);
+    res.status(500).json({ ok: false, error: "QR 체크인 처리 실패" });
   }
 });
 
